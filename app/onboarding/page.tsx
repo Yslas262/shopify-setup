@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef, FormEvent, useCallback } from "react";
+import { useState, useRef, FormEvent, useCallback, useEffect } from "react";
 
 interface CollectionField {
   name: string;
@@ -46,6 +46,7 @@ interface PipelineData {
 }
 
 export default function OnboardingPage() {
+  const [mode, setMode] = useState<"auto" | "manual" | null>(null);
   const [logo, setLogo] = useState<File | null>(null);
   const [favicon, setFavicon] = useState<File | null>(null);
   const [primaryColor, setPrimaryColor] = useState("#6d388b");
@@ -67,11 +68,38 @@ export default function OnboardingPage() {
   const [expandedSteps, setExpandedSteps] = useState<Record<number, boolean>>({});
   const [done, setDone] = useState(false);
 
+  const [manualStatus, setManualStatus] = useState<Record<string, "pending" | "running" | "done" | "error">>({});
+  const [runningManualStep, setRunningManualStep] = useState<number | null>(null);
+  const [manualLogs, setManualLogs] = useState<Record<number, { message: string; details: string[] }>>({});
+  const [expandedManualLogs, setExpandedManualLogs] = useState<Record<number, boolean>>({});
+  const [toast, setToast] = useState<{ message: string; type: "success" | "error" } | null>(null);
+
   const pipeRef = useRef<PipelineData>({
     csvText: "", totalProducts: 0, productIds: [], collections: [],
     bestSellersId: "", themeId: "", logoUrl: "", faviconUrl: "",
     bannerDesktopUrl: "", bannerMobileUrl: "", collectionImages: [],
   });
+
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem("onboarding_steps");
+      if (saved) setManualStatus(JSON.parse(saved));
+    } catch { /* ignore */ }
+  }, []);
+
+  useEffect(() => {
+    if (!toast) return;
+    const t = setTimeout(() => setToast(null), 4000);
+    return () => clearTimeout(t);
+  }, [toast]);
+
+  function saveManualStatus(key: string, value: "pending" | "running" | "done" | "error") {
+    setManualStatus(prev => {
+      const next = { ...prev, [key]: value };
+      localStorage.setItem("onboarding_steps", JSON.stringify(next));
+      return next;
+    });
+  }
 
   function addCollection() {
     if (collections.length >= 7) return;
@@ -349,14 +377,269 @@ export default function OnboardingPage() {
     setExpandedSteps((prev) => ({ ...prev, [id]: !prev[id] }));
   }
 
+  async function executeManualStep(stepDef: StepDef) {
+    const key = `step${stepDef.id}`;
+    setRunningManualStep(stepDef.id);
+    setStepProgress("");
+    saveManualStatus(key, "running");
+
+    try {
+      if ((stepDef.id === 1 || stepDef.id === 2) && csvFile && !pipeRef.current.csvText) {
+        pipeRef.current.csvText = await readFileAsText(csvFile);
+      }
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      let data: any;
+
+      if (stepDef.streaming) {
+        data = await runStreamingStep(stepDef);
+      } else {
+        const { body, headers } = buildRequestBody(stepDef.id);
+        const res = await fetch(stepDef.endpoint, { method: "POST", headers, body });
+        data = await res.json();
+      }
+
+      applyPipelineData(stepDef.id, data);
+      const summary = extractSummary(stepDef.id, data);
+      setManualLogs(prev => ({ ...prev, [stepDef.id]: { message: summary.message, details: summary.details } }));
+
+      if (data.success) {
+        saveManualStatus(key, "done");
+        setToast({ message: `${stepDef.label} concluida com sucesso!`, type: "success" });
+      } else {
+        saveManualStatus(key, "error");
+        setToast({ message: `Falha em ${stepDef.label}. Tente novamente.`, type: "error" });
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Erro desconhecido";
+      setManualLogs(prev => ({ ...prev, [stepDef.id]: { message: msg, details: [] } }));
+      saveManualStatus(key, "error");
+      setToast({ message: `Falha em ${stepDef.label}. Tente novamente.`, type: "error" });
+    }
+
+    setStepProgress("");
+    setRunningManualStep(null);
+  }
+
   const hasError = Object.keys(stepErrors).length > 0;
   const formReady = csvFile && themeZip && collections.some((c) => c.name.trim()) && primaryColor && secondaryColor;
+
+  if (mode === null) {
+    return (
+      <main className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900 flex items-center justify-center p-4">
+        <div className="text-center space-y-10">
+          <div>
+            <h1 className="text-4xl font-bold text-white mb-3">Store Onboarding</h1>
+            <p className="text-slate-300 text-lg">Como deseja configurar sua loja?</p>
+          </div>
+
+          <div className="flex flex-col sm:flex-row gap-6 justify-center">
+            <button
+              onClick={() => setMode("auto")}
+              className="group relative px-8 py-6 bg-emerald-600/20 hover:bg-emerald-600/30 border border-emerald-500/30 hover:border-emerald-500/60 rounded-2xl transition-all duration-300 hover:scale-105 hover:shadow-lg hover:shadow-emerald-500/20 min-w-[220px]"
+            >
+              <span className="text-4xl block mb-3">&#128640;</span>
+              <span className="text-xl font-bold text-white block">Setup Automatico</span>
+              <span className="text-sm text-slate-400 mt-2 block">Executa todas as etapas em sequencia automaticamente</span>
+            </button>
+
+            <button
+              onClick={() => setMode("manual")}
+              className="group relative px-8 py-6 bg-blue-600/20 hover:bg-blue-600/30 border border-blue-500/30 hover:border-blue-500/60 rounded-2xl transition-all duration-300 hover:scale-105 hover:shadow-lg hover:shadow-blue-500/20 min-w-[220px]"
+            >
+              <span className="text-4xl block mb-3">&#9881;&#65039;</span>
+              <span className="text-xl font-bold text-white block">Setup Manual</span>
+              <span className="text-sm text-slate-400 mt-2 block">Execute cada etapa individualmente na ordem que preferir</span>
+            </button>
+          </div>
+        </div>
+      </main>
+    );
+  }
+
+  if (mode === "manual") {
+    return (
+      <main className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900 p-4 md:p-8">
+        <div className="max-w-4xl mx-auto space-y-8">
+          <header className="text-center">
+            <div className="flex items-center justify-center gap-4 mb-2">
+              <button onClick={() => setMode(null)} className="text-slate-400 hover:text-white transition text-sm underline">Voltar</button>
+            </div>
+            <h1 className="text-3xl font-bold text-white mb-2">Setup Manual</h1>
+            <p className="text-slate-300">Execute cada etapa individualmente na ordem que preferir</p>
+          </header>
+
+          {/* ── FORM (dados necessários para as etapas) ── */}
+          <div className="bg-white/10 backdrop-blur-lg rounded-2xl border border-white/20 p-6 space-y-6">
+            <fieldset className="space-y-4">
+              <legend className="text-lg font-semibold text-white mb-2">Identidade</legend>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <FileInput label="Logo (PNG/SVG)" accept=".png,.svg" onChange={setLogo} fileName={logo?.name} disabled={runningManualStep !== null} />
+                <FileInput label="Favicon (PNG)" accept=".png" onChange={setFavicon} fileName={favicon?.name} disabled={runningManualStep !== null} />
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <ColorInput label="Cor Primária" value={primaryColor} onChange={setPrimaryColor} disabled={runningManualStep !== null} />
+                <ColorInput label="Cor Secundária" value={secondaryColor} onChange={setSecondaryColor} disabled={runningManualStep !== null} />
+              </div>
+            </fieldset>
+
+            <fieldset className="space-y-4">
+              <legend className="text-lg font-semibold text-white mb-2">Banner</legend>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <FileInput label="Imagem Desktop (JPG/PNG)" accept=".jpg,.jpeg,.png" onChange={setBannerDesktop} fileName={bannerDesktop?.name} disabled={runningManualStep !== null} />
+                <FileInput label="Imagem Mobile (JPG/PNG)" accept=".jpg,.jpeg,.png" onChange={setBannerMobile} fileName={bannerMobile?.name} disabled={runningManualStep !== null} />
+              </div>
+            </fieldset>
+
+            <fieldset className="space-y-4">
+              <legend className="text-lg font-semibold text-white mb-2">Tema (.zip)</legend>
+              <FileInput label="Selecione o arquivo .zip do tema" accept=".zip" onChange={setThemeZip} fileName={themeZip?.name} disabled={runningManualStep !== null} />
+            </fieldset>
+
+            <fieldset className="space-y-4">
+              <legend className="text-lg font-semibold text-white mb-2">Coleções (máx. 7)</legend>
+              {collections.map((col, idx) => (
+                <div key={idx} className="flex items-start gap-3 bg-white/5 rounded-xl p-3">
+                  <div className="flex-1 space-y-2">
+                    <input
+                      type="text" placeholder="Nome da coleção" value={col.name}
+                      onChange={(e) => updateCollection(idx, "name", e.target.value)}
+                      className="w-full px-3 py-2 bg-white/5 border border-white/10 rounded-lg text-white placeholder-slate-400 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                      disabled={runningManualStep !== null}
+                    />
+                    <FileInput label="Imagem da coleção" accept=".jpg,.jpeg,.png" onChange={(f) => updateCollection(idx, "image", f)} fileName={col.image?.name} disabled={runningManualStep !== null} compact />
+                  </div>
+                  {collections.length > 1 && (
+                    <button type="button" onClick={() => removeCollection(idx)} className="text-red-400 hover:text-red-300 text-xl mt-1" disabled={runningManualStep !== null}>&times;</button>
+                  )}
+                </div>
+              ))}
+              {collections.length < 7 && (
+                <button type="button" onClick={addCollection} className="text-sm text-emerald-400 hover:text-emerald-300" disabled={runningManualStep !== null}>+ Adicionar Coleção</button>
+              )}
+            </fieldset>
+
+            <fieldset className="space-y-4">
+              <legend className="text-lg font-semibold text-white mb-2">CSV de Produtos</legend>
+              <FileInput label="Arquivo CSV (formato Shopify/DSers)" accept=".csv" onChange={setCsvFile} fileName={csvFile?.name} disabled={runningManualStep !== null} />
+            </fieldset>
+          </div>
+
+          {/* ── STEP CARDS ── */}
+          <div className="space-y-3">
+            <h2 className="text-lg font-semibold text-white">Etapas</h2>
+            {STEPS.map((step) => {
+              const key = `step${step.id}`;
+              const status = manualStatus[key] || "pending";
+              const isRunning = runningManualStep === step.id;
+              const log = manualLogs[step.id];
+              const isExpanded = expandedManualLogs[step.id];
+
+              return (
+                <div key={step.id} className={`bg-white/10 backdrop-blur-lg rounded-xl border p-4 transition-all ${
+                  status === "done" ? "border-emerald-500/40" : status === "error" ? "border-red-500/40" : isRunning ? "border-blue-500/40" : "border-white/20"
+                }`}>
+                  <div className="flex items-center gap-4">
+                    <div className="w-8 h-8 flex items-center justify-center shrink-0 text-xl">
+                      {isRunning ? <Spinner /> : status === "done" ? (
+                        <span className="text-emerald-400">&#10003;</span>
+                      ) : status === "error" ? (
+                        <span className="text-red-400">&#10007;</span>
+                      ) : (
+                        <span className="text-slate-500 text-sm font-bold">{step.id}</span>
+                      )}
+                    </div>
+
+                    <div className="flex-1 min-w-0">
+                      <p className={`font-medium ${
+                        status === "done" ? "text-emerald-300" : status === "error" ? "text-red-300" : isRunning ? "text-blue-300" : "text-white"
+                      }`}>
+                        Etapa {step.id}: {step.label}
+                      </p>
+                      {log && !isRunning && (
+                        <p className={`text-xs mt-0.5 ${status === "error" ? "text-red-300/70" : "text-slate-400"}`}>{log.message}</p>
+                      )}
+                      {isRunning && stepProgress && (
+                        <p className="text-xs text-blue-200 font-mono mt-0.5">{stepProgress}</p>
+                      )}
+                    </div>
+
+                    <button
+                      disabled={runningManualStep !== null}
+                      onClick={() => executeManualStep(step)}
+                      className={`shrink-0 px-4 py-2 text-sm font-semibold rounded-lg transition-all ${
+                        runningManualStep !== null
+                          ? "bg-slate-600 text-slate-400 cursor-not-allowed"
+                          : status === "done"
+                            ? "bg-emerald-600/30 hover:bg-emerald-600/50 text-emerald-300 border border-emerald-500/30"
+                            : status === "error"
+                              ? "bg-amber-600/30 hover:bg-amber-600/50 text-amber-300 border border-amber-500/30"
+                              : "bg-blue-600/30 hover:bg-blue-600/50 text-blue-300 border border-blue-500/30"
+                      }`}
+                    >
+                      {isRunning ? "Executando..." : status === "done" ? "Re-executar" : status === "error" ? "Tentar novamente" : "Executar"}
+                    </button>
+                  </div>
+
+                  {log && log.details.length > 0 && !isRunning && (
+                    <div className="mt-3 pt-3 border-t border-white/10">
+                      <button
+                        type="button"
+                        onClick={() => setExpandedManualLogs(prev => ({ ...prev, [step.id]: !prev[step.id] }))}
+                        className="text-xs text-slate-400 hover:text-white px-2 py-1 rounded bg-white/5 hover:bg-white/10 transition"
+                      >
+                        {isExpanded ? "Ocultar detalhes" : "Ver detalhes"}
+                      </button>
+                      {isExpanded && (
+                        <div className="mt-2 bg-black/20 rounded-lg p-3 max-h-40 overflow-y-auto">
+                          {log.details.map((d, i) => (
+                            <p key={i} className="text-xs text-slate-300 leading-relaxed">{d}</p>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+
+          {/* ── RESET ── */}
+          <button
+            onClick={() => {
+              setManualStatus({});
+              setManualLogs({});
+              setExpandedManualLogs({});
+              localStorage.removeItem("onboarding_steps");
+              setToast({ message: "Status resetado com sucesso.", type: "success" });
+            }}
+            disabled={runningManualStep !== null}
+            className="w-full py-2.5 px-4 bg-slate-700/50 hover:bg-slate-600/50 disabled:opacity-40 disabled:cursor-not-allowed text-slate-300 hover:text-white text-sm font-medium rounded-xl border border-white/10 transition"
+          >
+            Resetar tudo
+          </button>
+        </div>
+
+        {/* ── TOAST ── */}
+        {toast && (
+          <div className={`fixed bottom-6 right-6 px-5 py-3 rounded-xl text-white text-sm font-medium shadow-2xl z-50 transition-all ${
+            toast.type === "success" ? "bg-emerald-600" : "bg-red-600"
+          }`}>
+            {toast.message}
+          </div>
+        )}
+      </main>
+    );
+  }
 
   return (
     <main className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900 p-4 md:p-8">
       <div className="max-w-4xl mx-auto space-y-8">
         <header className="text-center">
-          <h1 className="text-3xl font-bold text-white mb-2">Store Onboarding</h1>
+          <div className="flex items-center justify-center gap-4 mb-2">
+            <button onClick={() => { setMode(null); setRunning(false); setDone(false); }} className="text-slate-400 hover:text-white transition text-sm underline">Voltar</button>
+          </div>
+          <h1 className="text-3xl font-bold text-white mb-2">Setup Automatico</h1>
           <p className="text-slate-300">Preencha os dados abaixo e inicie o setup automatizado</p>
         </header>
 
