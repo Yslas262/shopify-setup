@@ -1,5 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import crypto from "crypto";
+import { unsealData } from "iron-session";
+import { sealSession, sessionOptions } from "@/lib/session";
+import type { TempCredentials } from "@/app/api/auth/store-temp/route";
+
+const TEMP_COOKIE_NAME = "shopify_temp_creds";
 
 export async function GET(request: NextRequest) {
   const { searchParams } = request.nextUrl;
@@ -15,32 +20,43 @@ export async function GET(request: NextRequest) {
     );
   }
 
-  // 1. Validate state (anti-CSRF)
-  const savedNonce = request.cookies.get("shopify_nonce")?.value;
-  if (!savedNonce || savedNonce !== state) {
+  const password = process.env.SESSION_SECRET;
+  if (!password) {
+    return NextResponse.json(
+      { error: "SESSION_SECRET não configurado." },
+      { status: 500 }
+    );
+  }
+
+  const tempCookie = request.cookies.get(TEMP_COOKIE_NAME)?.value;
+  if (!tempCookie) {
+    return NextResponse.json(
+      { error: "Credenciais temporárias ausentes. Refaça a conexão." },
+      { status: 403 }
+    );
+  }
+
+  let creds: TempCredentials;
+  try {
+    creds = await unsealData<TempCredentials>(tempCookie, { password });
+  } catch {
+    return NextResponse.json(
+      { error: "Cookie temporário inválido. Refaça a conexão." },
+      { status: 403 }
+    );
+  }
+
+  if (creds.state !== state) {
     return NextResponse.json(
       { error: "Validação CSRF falhou — state inválido." },
       { status: 403 }
     );
   }
 
-  // 2. Validate HMAC
-  if (!verifyHmac(searchParams)) {
+  if (!verifyHmac(searchParams, creds.clientSecret)) {
     return NextResponse.json(
       { error: "Validação HMAC falhou." },
       { status: 403 }
-    );
-  }
-
-  // 3. Exchange code for access_token
-  const clientId = process.env.SHOPIFY_CLIENT_ID;
-  const clientSecret = process.env.SHOPIFY_CLIENT_SECRET;
-  const appUrl = process.env.NEXT_PUBLIC_APP_URL;
-
-  if (!clientId || !clientSecret || !appUrl) {
-    return NextResponse.json(
-      { error: "Variáveis de ambiente não configuradas." },
-      { status: 500 }
     );
   }
 
@@ -50,8 +66,8 @@ export async function GET(request: NextRequest) {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        client_id: clientId,
-        client_secret: clientSecret,
+        client_id: creds.clientId,
+        client_secret: creds.clientSecret,
         code,
       }),
     }
@@ -73,62 +89,47 @@ export async function GET(request: NextRequest) {
     );
   }
 
-  // 4. Encrypt and store session in httpOnly cookie
-  const sessionData = JSON.stringify({ shop, accessToken: access_token });
-  const encryptedSession = encrypt(sessionData);
+  const sealed = await sealSession({ shop, accessToken: access_token });
 
-  const redirectUrl = new URL("/onboarding", appUrl);
-  const response = NextResponse.redirect(redirectUrl);
+  const appUrl = process.env.NEXT_PUBLIC_APP_URL || `https://${request.nextUrl.host}`;
+  const response = NextResponse.redirect(
+    new URL("/onboarding", appUrl.replace(/\/$/, ""))
+  );
 
-  response.cookies.set("shopify_session", encryptedSession, {
+  response.cookies.set(sessionOptions.cookieName, sealed, {
     httpOnly: true,
     secure: process.env.NODE_ENV === "production",
     sameSite: "lax",
     path: "/",
-    maxAge: 86400, // 24 hours
+    maxAge: 86400,
   });
 
-  response.cookies.delete("shopify_nonce");
+  response.cookies.delete(TEMP_COOKIE_NAME);
 
   return response;
 }
 
-function verifyHmac(params: URLSearchParams): boolean {
-  const secret = process.env.SHOPIFY_CLIENT_SECRET;
-  if (!secret) return false;
-
+function verifyHmac(params: URLSearchParams, secret: string): boolean {
   const entries: [string, string][] = [];
   params.forEach((value, key) => {
-    if (key !== "hmac") {
+    if (key !== "hmac" && key !== "signature") {
       entries.push([key, value]);
     }
   });
   entries.sort(([a], [b]) => a.localeCompare(b));
 
   const message = entries.map(([k, v]) => `${k}=${v}`).join("&");
-  const hmac = params.get("hmac") || "";
+  const hmacParam = params.get("hmac") || "";
 
   const computed = crypto
     .createHmac("sha256", secret)
     .update(message)
     .digest("hex");
 
+  if (hmacParam.length !== computed.length) return false;
+
   return crypto.timingSafeEqual(
-    Buffer.from(hmac, "hex"),
-    Buffer.from(computed, "hex")
+    Buffer.from(hmacParam, "utf8"),
+    Buffer.from(computed, "utf8")
   );
-}
-
-function encrypt(text: string): string {
-  const secret = process.env.SESSION_SECRET;
-  if (!secret) throw new Error("SESSION_SECRET não configurado");
-
-  const key = crypto.scryptSync(secret, "shopify-setup-salt", 32);
-  const iv = crypto.randomBytes(16);
-  const cipher = crypto.createCipheriv("aes-256-cbc", key, iv);
-
-  let encrypted = cipher.update(text, "utf8", "hex");
-  encrypted += cipher.final("hex");
-
-  return iv.toString("hex") + ":" + encrypted;
 }

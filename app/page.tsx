@@ -2,8 +2,25 @@
 
 import { useState, FormEvent } from "react";
 
+const SCOPES = [
+  "read_products",
+  "write_products",
+  "read_themes",
+  "write_themes",
+  "read_files",
+  "write_files",
+  "write_content",
+  "read_content",
+  "read_online_store_navigation",
+  "write_online_store_navigation",
+  "read_publications",
+  "write_publications",
+].join(",");
+
 export default function HomePage() {
   const [shopUrl, setShopUrl] = useState("");
+  const [clientId, setClientId] = useState("");
+  const [clientSecret, setClientSecret] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
@@ -22,27 +39,60 @@ export default function HomePage() {
     setError("");
 
     const shop = normalizeShop(shopUrl);
-    if (!shop || !shop.match(/^[a-z0-9-]+\.myshopify\.com$/)) {
+    if (!shop.match(/^[a-z0-9-]+\.myshopify\.com$/)) {
       setError("URL inválida. Use o formato: minha-loja.myshopify.com");
+      return;
+    }
+    if (!clientId.trim()) {
+      setError("Client ID é obrigatório.");
+      return;
+    }
+    if (!clientSecret.trim()) {
+      setError("Client Secret é obrigatório.");
       return;
     }
 
     setLoading(true);
 
-    try {
-      const res = await fetch(
-        `/api/auth/install?shop=${encodeURIComponent(shop)}`
-      );
-      const data = await res.json();
+    const state = crypto.randomUUID();
 
-      if (data.installUrl) {
-        window.location.href = data.installUrl;
-      } else {
-        setError(data.error || "Erro ao gerar link de instalação.");
+    sessionStorage.setItem(
+      "shopify_temp",
+      JSON.stringify({ shop, clientId: clientId.trim(), clientSecret: clientSecret.trim() })
+    );
+
+    try {
+      const res = await fetch("/api/auth/store-temp", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          shop,
+          clientId: clientId.trim(),
+          clientSecret: clientSecret.trim(),
+          state,
+        }),
+      });
+
+      if (!res.ok) {
+        const data = await res.json();
+        setError(data.error || "Erro ao salvar credenciais temporárias.");
+        setLoading(false);
+        return;
       }
+
+      const appUrl = process.env.NEXT_PUBLIC_APP_URL || window.location.origin;
+      const redirectUri = `${appUrl.replace(/\/$/, "")}/api/auth/callback`;
+
+      const installUrl =
+        `https://${shop}/admin/oauth/authorize?` +
+        `client_id=${encodeURIComponent(clientId.trim())}&` +
+        `scope=${encodeURIComponent(SCOPES)}&` +
+        `redirect_uri=${encodeURIComponent(redirectUri)}&` +
+        `state=${state}`;
+
+      window.location.href = installUrl;
     } catch {
       setError("Erro de conexão. Tente novamente.");
-    } finally {
       setLoading(false);
     }
   }
@@ -71,29 +121,63 @@ export default function HomePage() {
               Shopify Store Setup
             </h1>
             <p className="text-slate-300 text-sm">
-              Conecte sua loja para iniciar o onboarding automatizado
+              Conecte sua loja com as credenciais do seu app
             </p>
           </div>
 
-          <form onSubmit={handleConnect} className="space-y-5">
+          <form onSubmit={handleConnect} className="space-y-4">
             <div>
               <label
                 htmlFor="shop-url"
-                className="block text-sm font-medium text-slate-200 mb-2"
+                className="block text-sm font-medium text-slate-200 mb-1.5"
               >
-                Shopify Store URL
+                Store URL
               </label>
-              <div className="relative">
-                <input
-                  id="shop-url"
-                  type="text"
-                  placeholder="minha-loja.myshopify.com"
-                  value={shopUrl}
-                  onChange={(e) => setShopUrl(e.target.value)}
-                  className="w-full px-4 py-3 bg-white/5 border border-white/10 rounded-xl text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-transparent transition"
-                  required
-                />
-              </div>
+              <input
+                id="shop-url"
+                type="text"
+                placeholder="minha-loja.myshopify.com"
+                value={shopUrl}
+                onChange={(e) => setShopUrl(e.target.value)}
+                className="w-full px-4 py-3 bg-white/5 border border-white/10 rounded-xl text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-transparent transition"
+                required
+              />
+            </div>
+
+            <div>
+              <label
+                htmlFor="client-id"
+                className="block text-sm font-medium text-slate-200 mb-1.5"
+              >
+                Client ID
+              </label>
+              <input
+                id="client-id"
+                type="text"
+                placeholder="ID do app criado no Dev Dashboard"
+                value={clientId}
+                onChange={(e) => setClientId(e.target.value)}
+                className="w-full px-4 py-3 bg-white/5 border border-white/10 rounded-xl text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-transparent transition font-mono text-sm"
+                required
+              />
+            </div>
+
+            <div>
+              <label
+                htmlFor="client-secret"
+                className="block text-sm font-medium text-slate-200 mb-1.5"
+              >
+                Client Secret
+              </label>
+              <input
+                id="client-secret"
+                type="password"
+                placeholder="Secret do app criado no Dev Dashboard"
+                value={clientSecret}
+                onChange={(e) => setClientSecret(e.target.value)}
+                className="w-full px-4 py-3 bg-white/5 border border-white/10 rounded-xl text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-transparent transition font-mono text-sm"
+                required
+              />
             </div>
 
             {error && (
@@ -104,7 +188,7 @@ export default function HomePage() {
 
             <button
               type="submit"
-              disabled={loading || !shopUrl.trim()}
+              disabled={loading || !shopUrl.trim() || !clientId.trim() || !clientSecret.trim()}
               className="w-full py-3 px-4 bg-emerald-600 hover:bg-emerald-500 disabled:bg-slate-600 disabled:cursor-not-allowed text-white font-semibold rounded-xl transition-all duration-200 shadow-lg shadow-emerald-500/25 hover:shadow-emerald-500/40"
             >
               {loading ? (
@@ -128,7 +212,7 @@ export default function HomePage() {
                       d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
                     />
                   </svg>
-                  Conectando...
+                  Redirecionando...
                 </span>
               ) : (
                 "Conectar Loja"
@@ -137,7 +221,7 @@ export default function HomePage() {
           </form>
 
           <p className="text-center text-xs text-slate-400 mt-6">
-            Conexão segura via OAuth 2.0 &mdash; Shopify Partner App
+            Suas credenciais são usadas apenas para esta sessão OAuth
           </p>
         </div>
       </div>
