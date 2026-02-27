@@ -13,6 +13,46 @@ const THEME_FILES_UPSERT = `
   }
 `;
 
+async function upsertFileWithRetry(
+  client: ShopifyClient,
+  themeId: string,
+  filename: string,
+  content: string,
+  maxAttempts = 3
+): Promise<{ ok: boolean; error?: string }> {
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      const data = await client.graphqlWithRetry(THEME_FILES_UPSERT, {
+        themeId,
+        files: [{ filename, body: { type: "TEXT", value: content } }],
+      });
+
+      const result = data as {
+        themeFilesUpsert: {
+          upsertedThemeFiles: { filename: string }[] | null;
+          userErrors: { field: string; message: string }[];
+        };
+      };
+
+      if (result.themeFilesUpsert.userErrors.length > 0) {
+        const msg = result.themeFilesUpsert.userErrors.map((e) => e.message).join("; ");
+        console.error(`[step7] ${filename} tentativa ${attempt}/${maxAttempts} userErrors:`, msg);
+        if (attempt === maxAttempts) return { ok: false, error: msg };
+        await new Promise((r) => setTimeout(r, 2000 * attempt));
+        continue;
+      }
+
+      return { ok: true };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Erro";
+      console.error(`[step7] ${filename} tentativa ${attempt}/${maxAttempts} exceção:`, msg);
+      if (attempt === maxAttempts) return { ok: false, error: msg };
+      await new Promise((r) => setTimeout(r, 2000 * attempt));
+    }
+  }
+  return { ok: false, error: "Max attempts reached" };
+}
+
 export async function POST(request: NextRequest) {
   const session = await getSession();
   if (!session) {
@@ -34,7 +74,7 @@ export async function POST(request: NextRequest) {
 
     if (!themeId) {
       return NextResponse.json(
-        { success: false, errors: ["themeId não fornecido."] },
+        { success: false, message: "themeId não fornecido.", errors: [] },
         { status: 400 }
       );
     }
@@ -55,47 +95,47 @@ export async function POST(request: NextRequest) {
     const indexJson = buildIndexJson(themeConfig);
 
     const client = new ShopifyClient(session.shop, session.accessToken);
+    const errors: { file: string; reason: string }[] = [];
+    const upserted: string[] = [];
 
-    const files = [
-      {
-        filename: "config/settings_data.json",
-        body: { type: "TEXT", value: JSON.stringify(settingsData) },
-      },
-      {
-        filename: "templates/index.json",
-        body: { type: "TEXT", value: JSON.stringify(indexJson) },
-      },
-    ];
-
-    const data = await client.graphqlWithRetry(THEME_FILES_UPSERT, {
+    const settingsResult = await upsertFileWithRetry(
+      client,
       themeId,
-      files,
-    });
+      "config/settings_data.json",
+      JSON.stringify(settingsData)
+    );
+    if (settingsResult.ok) {
+      upserted.push("config/settings_data.json");
+    } else {
+      errors.push({ file: "config/settings_data.json", reason: settingsResult.error || "Falha" });
+    }
 
-    const result = data as {
-      themeFilesUpsert: {
-        upsertedThemeFiles: { filename: string }[] | null;
-        userErrors: { field: string; message: string }[];
-      };
-    };
-
-    if (result.themeFilesUpsert.userErrors.length > 0) {
-      return NextResponse.json({
-        success: false,
-        errors: result.themeFilesUpsert.userErrors.map((e) => e.message),
-      });
+    const indexResult = await upsertFileWithRetry(
+      client,
+      themeId,
+      "templates/index.json",
+      JSON.stringify(indexJson)
+    );
+    if (indexResult.ok) {
+      upserted.push("templates/index.json");
+    } else {
+      errors.push({ file: "templates/index.json", reason: indexResult.error || "Falha" });
     }
 
     return NextResponse.json({
-      success: true,
-      files: result.themeFilesUpsert.upsertedThemeFiles?.map(
-        (f) => f.filename
-      ),
+      success: upserted.length > 0,
+      files: upserted,
+      errors,
+      message:
+        errors.length === 0
+          ? `${upserted.length} arquivos configurados com sucesso`
+          : `${upserted.length} OK, ${errors.length} falharam após retentativas`,
     });
   } catch (err) {
     const msg = err instanceof Error ? err.message : "Erro interno";
+    console.error("[step7] Erro fatal:", msg);
     return NextResponse.json(
-      { success: false, errors: [msg] },
+      { success: false, message: msg, errors: [] },
       { status: 500 }
     );
   }

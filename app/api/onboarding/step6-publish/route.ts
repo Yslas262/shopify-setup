@@ -25,7 +25,7 @@ export async function POST(request: NextRequest) {
 
     if (!themeId) {
       return NextResponse.json(
-        { success: false, errors: ["themeId não fornecido."] },
+        { success: false, message: "themeId não fornecido.", errors: [] },
         { status: 400 }
       );
     }
@@ -42,9 +42,13 @@ export async function POST(request: NextRequest) {
     };
 
     if (result.themePublish.userErrors.length > 0) {
+      const msgs = result.themePublish.userErrors.map((e) => e.message);
+      console.error("[step6] userErrors ao publicar tema:", msgs);
       return NextResponse.json({
         success: false,
-        errors: result.themePublish.userErrors.map((e) => e.message),
+        themeRole: "",
+        errors: msgs,
+        message: msgs.join("; "),
       });
     }
 
@@ -53,11 +57,14 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({
       success: role === "MAIN",
       themeRole: role,
+      errors: [],
+      message: role === "MAIN" ? "Tema publicado como MAIN" : `Tema com role: ${role}`,
     });
   } catch (err) {
     const msg = err instanceof Error ? err.message : "Erro interno";
+    console.error("[step6] Erro:", msg);
     return NextResponse.json(
-      { success: false, errors: [msg] },
+      { success: false, message: msg, errors: [] },
       { status: 500 }
     );
   }

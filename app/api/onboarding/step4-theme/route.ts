@@ -24,6 +24,55 @@ const THEME_STATUS = `
   }
 `;
 
+const LIST_THEMES = `
+  query listThemes {
+    themes(first: 50) {
+      nodes {
+        id
+        name
+        role
+      }
+    }
+  }
+`;
+
+async function findExistingTheme(
+  client: ShopifyClient,
+  themeName: string
+): Promise<string | null> {
+  try {
+    const data = await client.graphql(LIST_THEMES);
+    const result = data as {
+      themes: { nodes: { id: string; name: string; role: string }[] };
+    };
+    const match = result.themes.nodes.find((t) => t.name === themeName);
+    return match?.id || null;
+  } catch (err) {
+    console.error("[step4] Erro ao listar temas:", err);
+    return null;
+  }
+}
+
+async function waitForProcessing(
+  client: ShopifyClient,
+  themeId: string
+): Promise<boolean> {
+  const MAX_POLLS = 60;
+  const POLL_INTERVAL = 3000;
+
+  for (let i = 0; i < MAX_POLLS; i++) {
+    await new Promise((r) => setTimeout(r, POLL_INTERVAL));
+    try {
+      const data = await client.graphql(THEME_STATUS, { id: themeId });
+      const result = data as { theme: { id: string; processing: boolean } };
+      if (!result.theme.processing) return true;
+    } catch (err) {
+      console.error(`[step4] Erro no polling ${i + 1}:`, err);
+    }
+  }
+  return false;
+}
+
 export async function POST() {
   const session = await getSession();
   if (!session) {
@@ -33,7 +82,7 @@ export async function POST() {
   const themeZipUrl = process.env.THEME_ZIP_URL;
   if (!themeZipUrl) {
     return NextResponse.json(
-      { success: false, errors: ["THEME_ZIP_URL não configurada."] },
+      { success: false, message: "THEME_ZIP_URL não configurada.", errors: [] },
       { status: 500 }
     );
   }
@@ -42,6 +91,16 @@ export async function POST() {
     const client = new ShopifyClient(session.shop, session.accessToken);
     const storeName = session.shop.replace(".myshopify.com", "");
     const themeName = `Shining Pro - ${storeName}`;
+
+    const existingId = await findExistingTheme(client, themeName);
+    if (existingId) {
+      console.error(`[step4] Tema "${themeName}" já existe (${existingId}), reutilizando.`);
+      return NextResponse.json({
+        success: true,
+        themeId: existingId,
+        message: `Tema existente reutilizado: ${themeName}`,
+      });
+    }
 
     const createData = await client.graphqlWithRetry(THEME_CREATE, {
       name: themeName,
@@ -56,9 +115,12 @@ export async function POST() {
     };
 
     if (createResult.themeCreate.userErrors.length > 0) {
+      const msgs = createResult.themeCreate.userErrors.map((e) => e.message);
+      console.error("[step4] userErrors:", msgs);
       return NextResponse.json({
         success: false,
-        errors: createResult.themeCreate.userErrors.map((e) => e.message),
+        message: msgs.join("; "),
+        errors: msgs,
       });
     }
 
@@ -66,35 +128,31 @@ export async function POST() {
     if (!themeId) {
       return NextResponse.json({
         success: false,
-        errors: ["themeCreate não retornou ID."],
+        message: "themeCreate não retornou ID.",
+        errors: [],
       });
     }
 
-    const MAX_POLLS = 60;
-    const POLL_INTERVAL = 3000;
-
-    for (let i = 0; i < MAX_POLLS; i++) {
-      await new Promise((r) => setTimeout(r, POLL_INTERVAL));
-
-      const statusData = await client.graphql(THEME_STATUS, { id: themeId });
-      const statusResult = statusData as {
-        theme: { id: string; processing: boolean };
-      };
-
-      if (!statusResult.theme.processing) {
-        return NextResponse.json({ success: true, themeId });
-      }
+    const ready = await waitForProcessing(client, themeId);
+    if (!ready) {
+      return NextResponse.json({
+        success: false,
+        themeId,
+        message: "Timeout: tema ainda processando após 3 minutos.",
+        errors: [],
+      });
     }
 
     return NextResponse.json({
-      success: false,
+      success: true,
       themeId,
-      errors: ["Timeout: tema ainda processando após 3 minutos."],
+      message: `Tema "${themeName}" criado e processado.`,
     });
   } catch (err) {
     const msg = err instanceof Error ? err.message : "Erro interno";
+    console.error("[step4] Erro fatal:", msg);
     return NextResponse.json(
-      { success: false, errors: [msg] },
+      { success: false, message: msg, errors: [] },
       { status: 500 }
     );
   }

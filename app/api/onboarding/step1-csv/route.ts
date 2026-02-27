@@ -13,17 +13,23 @@ export async function POST(request: NextRequest) {
 
     if (!csvText || typeof csvText !== "string") {
       return NextResponse.json(
-        { success: false, errors: ["CSV não fornecido."] },
+        { success: false, errors: ["CSV não fornecido."], warnings: [], message: "CSV não fornecido." },
         { status: 400 }
       );
     }
 
     const result = validateCSV(csvText);
-    return NextResponse.json(result);
+    return NextResponse.json({
+      ...result,
+      message: result.success
+        ? `${result.totalProducts} produtos encontrados no CSV`
+        : `Validação falhou: ${(result.errors || []).join("; ")}`,
+    });
   } catch (err) {
     const msg = err instanceof Error ? err.message : "Erro interno";
+    console.error("[step1] Erro:", msg);
     return NextResponse.json(
-      { success: false, errors: [msg] },
+      { success: false, errors: [msg], warnings: [], message: msg },
       { status: 500 }
     );
   }

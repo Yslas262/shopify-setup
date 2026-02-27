@@ -37,7 +37,8 @@ export async function POST(request: NextRequest) {
     };
 
     const client = new ShopifyClient(session.shop, session.accessToken);
-    const errors: string[] = [];
+    const errors: { item: string; reason: string }[] = [];
+    const completed: string[] = [];
     const storeName = session.shop.replace(".myshopify.com", "");
     const storeEmail = `support@${session.shop}`;
 
@@ -53,25 +54,18 @@ export async function POST(request: NextRequest) {
         handle: "main-menu",
         items: menuItems,
       });
+      completed.push("Main Menu");
     } catch (err) {
-      const msg = err instanceof Error ? err.message : "Erro";
-      errors.push(`Menu principal: ${msg}`);
+      const reason = err instanceof Error ? err.message : "Erro";
+      console.error("[step8] Erro ao criar menu:", reason);
+      errors.push({ item: "Main Menu", reason });
     }
 
     const policies = [
-      { type: "REFUND_POLICY", body: UK_POLICIES.refund_policy(storeName) },
-      {
-        type: "PRIVACY_POLICY",
-        body: UK_POLICIES.privacy_policy(storeName, storeEmail),
-      },
-      {
-        type: "TERMS_OF_SERVICE",
-        body: UK_POLICIES.terms_of_service(storeName),
-      },
-      {
-        type: "SHIPPING_POLICY",
-        body: UK_POLICIES.shipping_policy(storeName),
-      },
+      { type: "REFUND_POLICY", label: "Refund Policy", body: UK_POLICIES.refund_policy(storeName) },
+      { type: "PRIVACY_POLICY", label: "Privacy Policy", body: UK_POLICIES.privacy_policy(storeName, storeEmail) },
+      { type: "TERMS_OF_SERVICE", label: "Terms of Service", body: UK_POLICIES.terms_of_service(storeName) },
+      { type: "SHIPPING_POLICY", label: "Shipping Policy", body: UK_POLICIES.shipping_policy(storeName) },
     ];
 
     for (const policy of policies) {
@@ -79,20 +73,28 @@ export async function POST(request: NextRequest) {
         await client.graphqlWithRetry(SHOP_POLICY_UPDATE, {
           shopPolicy: { type: policy.type, body: policy.body },
         });
+        completed.push(policy.label);
       } catch (err) {
-        const msg = err instanceof Error ? err.message : "Erro";
-        errors.push(`Política ${policy.type}: ${msg}`);
+        const reason = err instanceof Error ? err.message : "Erro";
+        console.error(`[step8] Erro na política ${policy.label}:`, reason);
+        errors.push({ item: policy.label, reason });
       }
     }
 
     return NextResponse.json({
-      success: errors.length === 0,
+      success: completed.length > 0,
+      completed,
       errors,
+      message:
+        errors.length === 0
+          ? `${completed.length} itens configurados com sucesso`
+          : `${completed.length} OK, ${errors.length} falharam`,
     });
   } catch (err) {
     const msg = err instanceof Error ? err.message : "Erro interno";
+    console.error("[step8] Erro fatal:", msg);
     return NextResponse.json(
-      { success: false, errors: [msg] },
+      { success: false, message: msg, errors: [] },
       { status: 500 }
     );
   }

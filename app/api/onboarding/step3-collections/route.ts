@@ -16,6 +16,16 @@ const CREATE_COLLECTION = `
   }
 `;
 
+const GET_COLLECTION_BY_HANDLE = `
+  query getCollectionByHandle($handle: String!) {
+    collectionByHandle(handle: $handle) {
+      id
+      handle
+      title
+    }
+  }
+`;
+
 const ADD_PRODUCTS_TO_COLLECTION = `
   mutation collectionAddProducts($id: ID!, $productIds: [ID!]!) {
     collectionAddProducts(id: $id, productIds: $productIds) {
@@ -24,6 +34,70 @@ const ADD_PRODUCTS_TO_COLLECTION = `
     }
   }
 `;
+
+async function findOrCreateCollection(
+  client: ShopifyClient,
+  name: string,
+  handle: string
+): Promise<{ id: string; handle: string; name: string } | null> {
+  try {
+    const data = await client.graphqlWithRetry(CREATE_COLLECTION, {
+      input: { title: name, handle },
+    });
+    const result = data as {
+      collectionCreate: {
+        collection: { id: string; handle: string; title: string } | null;
+        userErrors: { field: string; message: string }[];
+      };
+    };
+
+    if (result.collectionCreate.collection) {
+      return {
+        id: result.collectionCreate.collection.id,
+        handle: result.collectionCreate.collection.handle,
+        name,
+      };
+    }
+
+    const hasDuplicate = result.collectionCreate.userErrors.some(
+      (e) => e.message.toLowerCase().includes("taken") || e.message.toLowerCase().includes("already")
+    );
+
+    if (hasDuplicate) {
+      console.error(`[step3] Coleção "${name}" já existe, buscando existente...`);
+      return await fetchExistingCollection(client, name, handle);
+    }
+
+    console.error(`[step3] Erro ao criar coleção "${name}":`, result.collectionCreate.userErrors);
+    return null;
+  } catch (err) {
+    console.error(`[step3] Exceção ao criar coleção "${name}":`, err);
+    return await fetchExistingCollection(client, name, handle);
+  }
+}
+
+async function fetchExistingCollection(
+  client: ShopifyClient,
+  name: string,
+  handle: string
+): Promise<{ id: string; handle: string; name: string } | null> {
+  try {
+    const data = await client.graphqlWithRetry(GET_COLLECTION_BY_HANDLE, { handle });
+    const result = data as {
+      collectionByHandle: { id: string; handle: string; title: string } | null;
+    };
+    if (result.collectionByHandle) {
+      return {
+        id: result.collectionByHandle.id,
+        handle: result.collectionByHandle.handle,
+        name,
+      };
+    }
+  } catch (err) {
+    console.error(`[step3] Falha ao buscar coleção existente "${handle}":`, err);
+  }
+  return null;
+}
 
 export async function POST(request: NextRequest) {
   const session = await getSession();
@@ -34,94 +108,59 @@ export async function POST(request: NextRequest) {
   try {
     const { collections: collectionNames, productIds } = await request.json();
     const client = new ShopifyClient(session.shop, session.accessToken);
-    const errors: string[] = [];
-    const createdCollections: { id: string; handle: string; name: string }[] =
-      [];
+    const errors: { name: string; reason: string }[] = [];
+    const createdCollections: { id: string; handle: string; name: string }[] = [];
 
     for (const name of collectionNames as string[]) {
       const handle = slugify(name);
-      try {
-        const data = await client.graphqlWithRetry(CREATE_COLLECTION, {
-          input: { title: name, handle },
-        });
-
-        const result = data as {
-          collectionCreate: {
-            collection: { id: string; handle: string; title: string } | null;
-            userErrors: { field: string; message: string }[];
-          };
-        };
-
-        if (result.collectionCreate.userErrors.length > 0) {
-          errors.push(
-            `${name}: ${result.collectionCreate.userErrors.map((e) => e.message).join("; ")}`
-          );
-          continue;
-        }
-
-        if (result.collectionCreate.collection) {
-          createdCollections.push({
-            id: result.collectionCreate.collection.id,
-            handle: result.collectionCreate.collection.handle,
-            name,
-          });
-        }
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : "Erro";
-        errors.push(`${name}: ${msg}`);
+      const col = await findOrCreateCollection(client, name, handle);
+      if (col) {
+        createdCollections.push(col);
+      } else {
+        errors.push({ name, reason: "Falha ao criar e coleção existente não encontrada" });
       }
     }
 
     let bestSellersId = "";
-    try {
-      const bsData = await client.graphqlWithRetry(CREATE_COLLECTION, {
-        input: { title: "Best Sellers", handle: "best-sellers" },
-      });
-
-      const bsResult = bsData as {
-        collectionCreate: {
-          collection: { id: string } | null;
-          userErrors: { field: string; message: string }[];
-        };
-      };
-
-      if (bsResult.collectionCreate.collection) {
-        bestSellersId = bsResult.collectionCreate.collection.id;
-      } else if (bsResult.collectionCreate.userErrors.length > 0) {
-        errors.push(
-          `Best Sellers: ${bsResult.collectionCreate.userErrors.map((e) => e.message).join("; ")}`
-        );
-      }
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : "Erro";
-      errors.push(`Best Sellers: ${msg}`);
+    const bs = await findOrCreateCollection(client, "Best Sellers", "best-sellers");
+    if (bs) {
+      bestSellersId = bs.id;
+    } else {
+      errors.push({ name: "Best Sellers", reason: "Falha ao criar/encontrar coleção" });
     }
 
     if (bestSellersId && productIds && productIds.length > 0) {
       const batches = chunkArray(productIds as string[], 250);
-      for (const batch of batches) {
+      for (let i = 0; i < batches.length; i++) {
         try {
           await client.graphqlWithRetry(ADD_PRODUCTS_TO_COLLECTION, {
             id: bestSellersId,
-            productIds: batch,
+            productIds: batches[i],
           });
         } catch (err) {
-          const msg = err instanceof Error ? err.message : "Erro";
-          errors.push(`Vincular Best Sellers: ${msg}`);
+          const reason = err instanceof Error ? err.message : "Erro";
+          console.error(`[step3] Vincular batch ${i + 1} ao Best Sellers:`, reason);
+          errors.push({ name: `Best Sellers batch ${i + 1}`, reason });
         }
       }
     }
 
     return NextResponse.json({
-      success: errors.length === 0,
+      success: createdCollections.length > 0 || bestSellersId !== "",
       collections: createdCollections,
       bestSellersId,
+      created: createdCollections.length,
       errors,
+      message:
+        errors.length === 0
+          ? `${createdCollections.length} coleções criadas com sucesso`
+          : `${createdCollections.length} coleções OK, ${errors.length} com problema`,
     });
   } catch (err) {
     const msg = err instanceof Error ? err.message : "Erro interno";
+    console.error("[step3] Erro fatal:", msg);
     return NextResponse.json(
-      { success: false, errors: [msg] },
+      { success: false, errors: [{ name: "_global", reason: msg }], message: msg },
       { status: 500 }
     );
   }
