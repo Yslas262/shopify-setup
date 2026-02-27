@@ -40,6 +40,7 @@ export interface StepResult {
 
 export interface CsvValidationResult extends StepResult {
   totalProducts: number;
+  warnings: string[];
   preview: CsvProduct[];
 }
 

@@ -1,14 +1,13 @@
 import type { CsvProduct, CsvValidationResult } from "@/types/onboarding";
 
-const REQUIRED_COLUMNS = [
-  "Handle",
-  "Title",
+const REQUIRED_COLUMNS = ["Handle", "Title", "Variant Price"];
+
+const OPTIONAL_COLUMNS = [
   "Body (HTML)",
   "Vendor",
   "Type",
   "Tags",
   "Published",
-  "Variant Price",
   "Image Src",
   "Image Position",
 ];
@@ -42,6 +41,7 @@ export function parseCSV(text: string): {
 
 export function validateCSV(text: string): CsvValidationResult {
   const errors: string[] = [];
+  const warnings: string[] = [];
   const { headers, rows } = parseCSV(text);
 
   if (headers.length === 0) {
@@ -49,48 +49,73 @@ export function validateCSV(text: string): CsvValidationResult {
       success: false,
       totalProducts: 0,
       errors: ["CSV vazio ou formato inválido."],
+      warnings: [],
       preview: [],
     };
   }
 
-  const missingColumns = REQUIRED_COLUMNS.filter(
+  const missingRequired = REQUIRED_COLUMNS.filter(
     (col) => !headers.includes(col)
   );
-  if (missingColumns.length > 0) {
+  if (missingRequired.length > 0) {
     return {
       success: false,
       totalProducts: 0,
-      errors: [`Colunas ausentes: ${missingColumns.join(", ")}`],
+      errors: [`Colunas obrigatórias ausentes: ${missingRequired.join(", ")}`],
+      warnings: [],
       preview: [],
     };
+  }
+
+  const missingOptional = OPTIONAL_COLUMNS.filter(
+    (col) => !headers.includes(col)
+  );
+  if (missingOptional.length > 0) {
+    warnings.push(
+      `Colunas opcionais ausentes (não impedem importação): ${missingOptional.join(", ")}`
+    );
   }
 
   const productMap = new Map<string, Record<string, string>[]>();
 
-  rows.forEach((row, idx) => {
-    const lineNum = idx + 2;
-
-    if (!row["Handle"]?.trim()) {
-      errors.push(`Linha ${lineNum}: Handle ausente`);
-      return;
-    }
-    if (!row["Title"]?.trim() && !productMap.has(row["Handle"])) {
-      errors.push(`Linha ${lineNum}: Title ausente`);
-    }
-    if (!row["Variant Price"]?.trim() && row["Variant Price"] !== "0") {
-      errors.push(`Linha ${lineNum}: Variant Price ausente`);
-    }
-
-    const handle = row["Handle"];
-    if (!productMap.has(handle)) {
-      productMap.set(handle, []);
-    }
+  rows.forEach((row) => {
+    const handle = row["Handle"]?.trim();
+    if (!handle) return;
+    if (!productMap.has(handle)) productMap.set(handle, []);
     productMap.get(handle)!.push(row);
   });
 
+  const entries = Array.from(productMap.entries());
+  for (const [handle, productRows] of entries) {
+    const firstRow = productRows[0];
+    const lineNum = rows.indexOf(firstRow) + 2;
+
+    if (!firstRow["Title"]?.trim()) {
+      errors.push(`Linha ${lineNum}: Handle "${handle}" sem Title na linha principal`);
+    }
+
+    const hasPrice = productRows.some((r: Record<string, string>) => {
+      const price = r["Variant Price"]?.trim();
+      return price !== "" && price !== undefined;
+    });
+
+    if (!hasPrice) {
+      errors.push(
+        `Handle "${handle}": nenhuma linha possui Variant Price`
+      );
+    }
+  }
+
+  const rowsWithoutHandle = rows.filter((r) => !r["Handle"]?.trim());
+  if (rowsWithoutHandle.length > 0) {
+    warnings.push(
+      `${rowsWithoutHandle.length} linha(s) ignoradas por não terem Handle`
+    );
+  }
+
   const uniqueProducts = Array.from(productMap.entries());
-  const preview: CsvProduct[] = uniqueProducts.slice(0, 5).map(([, rows]) => {
-    const first = rows[0];
+  const preview: CsvProduct[] = uniqueProducts.slice(0, 5).map(([, group]) => {
+    const first = group[0];
     return {
       handle: first["Handle"] || "",
       title: first["Title"] || "",
@@ -109,6 +134,7 @@ export function validateCSV(text: string): CsvValidationResult {
     success: errors.length === 0,
     totalProducts: uniqueProducts.length,
     errors,
+    warnings,
     preview,
   };
 }
@@ -118,7 +144,7 @@ export function groupProductsByHandle(
 ): Map<string, Record<string, string>[]> {
   const map = new Map<string, Record<string, string>[]>();
   for (const row of rows) {
-    const handle = row["Handle"];
+    const handle = row["Handle"]?.trim();
     if (!handle) continue;
     if (!map.has(handle)) map.set(handle, []);
     map.get(handle)!.push(row);
