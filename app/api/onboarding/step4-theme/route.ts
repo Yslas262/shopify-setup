@@ -1,10 +1,23 @@
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { getSession } from "@/lib/session";
 import { ShopifyClient } from "@/lib/shopify";
 
+const STAGED_UPLOADS_CREATE = `
+  mutation stagedUploadsCreate($input: [StagedUploadInput!]!) {
+    stagedUploadsCreate(input: $input) {
+      stagedTargets {
+        url
+        resourceUrl
+        parameters { name value }
+      }
+      userErrors { field message }
+    }
+  }
+`;
+
 const THEME_CREATE = `
-  mutation themeCreate($name: String!, $source: URL!) {
-    themeCreate(name: $name, source: $source) {
+  mutation themeCreate($name: String!, $src: URL!, $role: ThemeRole!) {
+    themeCreate(name: $name, src: $src, role: $role) {
       theme {
         id
         name
@@ -27,11 +40,7 @@ const THEME_STATUS = `
 const LIST_THEMES = `
   query listThemes {
     themes(first: 50) {
-      nodes {
-        id
-        name
-        role
-      }
+      nodes { id name role }
     }
   }
 `;
@@ -73,24 +82,26 @@ async function waitForProcessing(
   return false;
 }
 
-export async function POST() {
+export async function POST(request: NextRequest) {
   const session = await getSession();
   if (!session) {
     return NextResponse.json({ error: "Não autenticado." }, { status: 401 });
   }
 
-  const themeZipUrl = process.env.THEME_ZIP_URL;
-  if (!themeZipUrl) {
-    return NextResponse.json(
-      { success: false, message: "THEME_ZIP_URL não configurada.", errors: [] },
-      { status: 500 }
-    );
-  }
-
   try {
+    const formData = await request.formData();
+    const themeZip = formData.get("themeZip") as File | null;
+
+    if (!themeZip) {
+      return NextResponse.json(
+        { success: false, message: "Arquivo .zip do tema não fornecido.", errors: [] },
+        { status: 400 }
+      );
+    }
+
     const client = new ShopifyClient(session.shop, session.accessToken);
     const storeName = session.shop.replace(".myshopify.com", "");
-    const themeName = `Shining Pro - ${storeName}`;
+    const themeName = `VT-PRO - ${storeName}`;
 
     const existingId = await findExistingTheme(client, themeName);
     if (existingId) {
@@ -102,9 +113,75 @@ export async function POST() {
       });
     }
 
+    // PASSO 1 — stagedUploadsCreate
+    const stagedData = await client.graphqlWithRetry(STAGED_UPLOADS_CREATE, {
+      input: [
+        {
+          filename: themeZip.name,
+          mimeType: "application/zip",
+          resource: "THEME",
+          fileSize: String(themeZip.size),
+        },
+      ],
+    });
+
+    const stagedResult = stagedData as {
+      stagedUploadsCreate: {
+        stagedTargets: {
+          url: string;
+          resourceUrl: string;
+          parameters: { name: string; value: string }[];
+        }[];
+        userErrors: { field: string; message: string }[];
+      };
+    };
+
+    if (stagedResult.stagedUploadsCreate.userErrors.length > 0) {
+      const msgs = stagedResult.stagedUploadsCreate.userErrors.map((e) => e.message);
+      console.error("[step4] stagedUploadsCreate userErrors:", msgs);
+      return NextResponse.json({
+        success: false,
+        message: `Staged upload falhou: ${msgs.join("; ")}`,
+        errors: msgs,
+      });
+    }
+
+    const target = stagedResult.stagedUploadsCreate.stagedTargets[0];
+    if (!target) {
+      return NextResponse.json({
+        success: false,
+        message: "stagedUploadsCreate não retornou target.",
+        errors: [],
+      });
+    }
+
+    // PASSO 2 — Upload do .zip para a URL retornada
+    const uploadForm = new FormData();
+    for (const param of target.parameters) {
+      uploadForm.append(param.name, param.value);
+    }
+    uploadForm.append("file", themeZip);
+
+    const uploadRes = await fetch(target.url, {
+      method: "POST",
+      body: uploadForm,
+    });
+
+    if (!uploadRes.ok && uploadRes.status !== 201) {
+      const text = await uploadRes.text().catch(() => "");
+      console.error(`[step4] Upload S3 falhou: ${uploadRes.status}`, text);
+      return NextResponse.json({
+        success: false,
+        message: `Upload do .zip falhou: HTTP ${uploadRes.status}`,
+        errors: [],
+      });
+    }
+
+    // PASSO 3 — themeCreate com resourceUrl
     const createData = await client.graphqlWithRetry(THEME_CREATE, {
       name: themeName,
-      source: themeZipUrl,
+      src: target.resourceUrl,
+      role: "UNPUBLISHED",
     });
 
     const createResult = createData as {
@@ -116,7 +193,7 @@ export async function POST() {
 
     if (createResult.themeCreate.userErrors.length > 0) {
       const msgs = createResult.themeCreate.userErrors.map((e) => e.message);
-      console.error("[step4] userErrors:", msgs);
+      console.error("[step4] themeCreate userErrors:", msgs);
       return NextResponse.json({
         success: false,
         message: msgs.join("; "),
@@ -133,6 +210,7 @@ export async function POST() {
       });
     }
 
+    // PASSO 4 — Polling até processing = false
     const ready = await waitForProcessing(client, themeId);
     if (!ready) {
       return NextResponse.json({
@@ -146,7 +224,7 @@ export async function POST() {
     return NextResponse.json({
       success: true,
       themeId,
-      message: `Tema "${themeName}" criado e processado.`,
+      message: `Tema "${themeName}" enviado e processado.`,
     });
   } catch (err) {
     const msg = err instanceof Error ? err.message : "Erro interno";

@@ -55,6 +55,7 @@ export default function OnboardingPage() {
   const [collections, setCollections] = useState<CollectionField[]>([
     { name: "", image: null },
   ]);
+  const [themeZip, setThemeZip] = useState<File | null>(null);
   const [csvFile, setCsvFile] = useState<File | null>(null);
 
   const [running, setRunning] = useState(false);
@@ -114,10 +115,12 @@ export default function OnboardingPage() {
         headers["Content-Type"] = "application/json";
         break;
       }
-      case 4:
-        body = JSON.stringify({});
-        headers["Content-Type"] = "application/json";
+      case 4: {
+        const themeFd = new FormData();
+        if (themeZip) themeFd.append("themeZip", themeZip);
+        body = themeFd;
         break;
+      }
       case 5: {
         const fd = new FormData();
         if (logo) fd.append("logo", logo);
@@ -347,7 +350,7 @@ export default function OnboardingPage() {
   }
 
   const hasError = Object.keys(stepErrors).length > 0;
-  const formReady = csvFile && collections.some((c) => c.name.trim()) && primaryColor && secondaryColor;
+  const formReady = csvFile && themeZip && collections.some((c) => c.name.trim()) && primaryColor && secondaryColor;
 
   return (
     <main className="min-h-screen bg-gradient-to-br from-slate-900 via-purple-900 to-slate-900 p-4 md:p-8">
@@ -471,6 +474,11 @@ export default function OnboardingPage() {
                 <FileInput label="Imagem Desktop (JPG/PNG)" accept=".jpg,.jpeg,.png" onChange={setBannerDesktop} fileName={bannerDesktop?.name} disabled={running} />
                 <FileInput label="Imagem Mobile (JPG/PNG)" accept=".jpg,.jpeg,.png" onChange={setBannerMobile} fileName={bannerMobile?.name} disabled={running} />
               </div>
+            </fieldset>
+
+            <fieldset className="space-y-4">
+              <legend className="text-lg font-semibold text-white mb-2">Tema (.zip)</legend>
+              <FileInput label="Selecione o arquivo .zip do tema" accept=".zip" onChange={setThemeZip} fileName={themeZip?.name} disabled={running} />
             </fieldset>
 
             <fieldset className="space-y-4">
