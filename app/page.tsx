@@ -15,6 +15,9 @@ const SCOPES = [
   "write_online_store_navigation",
   "read_publications",
   "write_publications",
+  "read_locations",
+  "read_inventory",
+  "write_inventory",
 ].join(",");
 
 export default function HomePage() {

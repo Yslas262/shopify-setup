@@ -11,6 +11,9 @@ export const SHOPIFY_SCOPES = [
   "write_online_store_navigation",
   "read_publications",
   "write_publications",
+  "read_locations",
+  "read_inventory",
+  "write_inventory",
 ];
 
 export const SHOPIFY_API_VERSION = "2026-01";

@@ -3,11 +3,14 @@ import { getSession } from "@/lib/session";
 import { ShopifyClient } from "@/lib/shopify";
 import { parseCSV, groupProductsByHandle } from "@/lib/csv-parser";
 
-const GET_PRIMARY_LOCATION = `
-  query {
+const GET_LOCATIONS = `
+  query getLocations {
     locations(first: 1) {
-      nodes {
-        id
+      edges {
+        node {
+          id
+          name
+        }
       }
     }
   }
@@ -33,8 +36,16 @@ const CREATE_PRODUCT = `
 `;
 
 const VARIANTS_BULK_CREATE = `
-  mutation productVariantsBulkCreate($productId: ID!, $variants: [ProductVariantsBulkInput!]!) {
-    productVariantsBulkCreate(productId: $productId, variants: $variants) {
+  mutation productVariantsBulkCreate(
+    $productId: ID!,
+    $strategy: ProductVariantsBulkCreateStrategy,
+    $variants: [ProductVariantsBulkInput!]!
+  ) {
+    productVariantsBulkCreate(
+      productId: $productId,
+      strategy: $strategy,
+      variants: $variants
+    ) {
       productVariants {
         id
         title
@@ -46,24 +57,22 @@ const VARIANTS_BULK_CREATE = `
 `;
 
 async function fetchLocationId(client: ShopifyClient): Promise<string> {
-  const data = await client.graphqlWithRetry(GET_PRIMARY_LOCATION);
+  const data = await client.graphqlWithRetry(GET_LOCATIONS);
   const result = data as {
-    locations: { nodes: { id: string }[] };
+    locations: { edges: { node: { id: string; name: string } }[] };
   };
-  if (result.locations.nodes.length > 0) {
-    return result.locations.nodes[0].id;
+  if (result.locations.edges.length > 0) {
+    return result.locations.edges[0].node.id;
   }
   throw new Error("Nenhuma location encontrada na loja.");
 }
 
 function buildVariants(
-  productRows: Record<string, string>[],
-  locationId: string
+  productRows: Record<string, string>[]
 ): {
   price: string;
   sku?: string;
-  inventoryQuantities?: { availableQuantity: number; locationId: string }[];
-  optionValues?: { name: string; optionName: string }[];
+  optionValues: { name: string; optionName: string }[];
 }[] {
   const rowsWithPrice = productRows.filter(
     (r) => r["Variant Price"]?.trim()
@@ -71,36 +80,34 @@ function buildVariants(
 
   if (rowsWithPrice.length === 0) {
     const first = productRows[0];
-    return [{ price: first["Variant Price"]?.trim() || "0.00" }];
+    return [
+      {
+        price: String(first["Variant Price"]?.trim() || "0.00"),
+        optionValues: [{ name: "Default Title", optionName: "Title" }],
+      },
+    ];
   }
 
   return rowsWithPrice.map((r) => {
     const variant: {
       price: string;
       sku?: string;
-      inventoryQuantities?: { availableQuantity: number; locationId: string }[];
-      optionValues?: { name: string; optionName: string }[];
+      optionValues: { name: string; optionName: string }[];
     } = {
-      price: r["Variant Price"],
+      price: String(r["Variant Price"]),
+      optionValues: [],
     };
 
     if (r["Variant SKU"]?.trim()) {
       variant.sku = r["Variant SKU"];
     }
 
-    if (r["Variant Inventory Qty"]?.trim()) {
-      const qty = parseInt(r["Variant Inventory Qty"], 10);
-      if (!isNaN(qty)) {
-        variant.inventoryQuantities = [
-          { availableQuantity: qty, locationId },
-        ];
-      }
-    }
-
     const optionName = r["Option1 Name"]?.trim();
     const optionValue = r["Option1 Value"]?.trim();
     if (optionName && optionValue) {
       variant.optionValues = [{ name: optionValue, optionName }];
+    } else {
+      variant.optionValues = [{ name: "Default Title", optionName: "Title" }];
     }
 
     return variant;
@@ -125,6 +132,7 @@ export async function POST(request: NextRequest) {
     let locationId: string;
     try {
       locationId = await fetchLocationId(client);
+      console.error(`[step2] Location encontrada: ${locationId}`);
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Erro";
       console.error("[step2] Falha ao buscar locationId:", msg);
@@ -135,10 +143,13 @@ export async function POST(request: NextRequest) {
         failed: total,
         total,
         productIds: [],
-        errors: [{ handle: "_global", reason: `Location não encontrada: ${msg}` }],
+        errors: [{ handle: "_global", reason: `Location não encontrada: ${msg}. Verifique se o app possui o scope read_locations.` }],
         message: `Falha ao buscar location da loja: ${msg}`,
       });
     }
+
+    // locationId is used indirectly — kept for future inventory operations
+    void locationId;
 
     const productIds: string[] = [];
     const errors: { handle: string; reason: string }[] = [];
@@ -175,7 +186,6 @@ export async function POST(request: NextRequest) {
                   : "DRAFT",
             };
 
-            // PASSO 1 — Criar produto (sem variantes)
             const createData = await client.graphqlWithRetry(CREATE_PRODUCT, {
               input,
               media: media.length > 0 ? media : undefined,
@@ -219,13 +229,13 @@ export async function POST(request: NextRequest) {
 
             productIds.push(product.id);
 
-            // PASSO 2 — Criar variantes via productVariantsBulkCreate
-            const variants = buildVariants(productRows, locationId);
+            const variants = buildVariants(productRows);
 
             if (variants.length > 0) {
               try {
                 const varData = await client.graphqlWithRetry(VARIANTS_BULK_CREATE, {
                   productId: product.id,
+                  strategy: "REMOVE_STANDALONE_VARIANT",
                   variants,
                 });
 
