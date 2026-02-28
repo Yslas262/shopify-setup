@@ -20,7 +20,7 @@ const LIST_MENUS = `
           id
           handle
           title
-          items { id title url }
+          items { id title type url }
         }
       }
     }
@@ -44,7 +44,7 @@ interface MenuNode {
   id: string;
   handle: string;
   title: string;
-  items: { id: string; title: string; url: string }[];
+  items: { id: string; title: string; type: string; url: string }[];
 }
 
 export async function POST(request: NextRequest) {
@@ -114,14 +114,15 @@ export async function POST(request: NextRequest) {
         const existingItems = footerMenu.items.map((item) => ({
           id: item.id,
           title: item.title,
+          type: item.type,
           url: item.url,
         }));
 
         const policyItems = [
-          { title: "Refund Policy", url: "/policies/refund-policy" },
-          { title: "Privacy Policy", url: "/policies/privacy-policy" },
-          { title: "Terms of Service", url: "/policies/terms-of-service" },
-          { title: "Shipping Policy", url: "/policies/shipping-policy" },
+          { title: "Refund Policy", type: "HTTP", url: "/policies/refund-policy" },
+          { title: "Privacy Policy", type: "HTTP", url: "/policies/privacy-policy" },
+          { title: "Terms of Service", type: "HTTP", url: "/policies/terms-of-service" },
+          { title: "Shipping Policy", type: "HTTP", url: "/policies/shipping-policy" },
         ];
 
         const existingUrls = new Set(existingItems.map((i) => i.url));
