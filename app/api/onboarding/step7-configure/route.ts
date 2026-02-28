@@ -184,6 +184,7 @@ export async function POST(request: NextRequest) {
     for (const entry of imageEntries) {
       const result = await uploadAndResolveImage(client, entry.url, entry.key);
       if (result) {
+        console.log(`${entry.key.toUpperCase()} FILE COMPLETO:`, JSON.stringify(result, null, 2));
         imageMap[entry.key] = result.id;
       } else {
         imageWarnings.push(`Imagem "${entry.key}" não pôde ser processada pela Files API.`);
@@ -204,6 +205,9 @@ export async function POST(request: NextRequest) {
 
     const settingsData = buildSettingsData(themeConfig);
     const indexJson = buildIndexJson(themeConfig);
+
+    console.log("SETTINGS_DATA:", JSON.stringify(settingsData, null, 2));
+    console.log("INDEX_JSON:", JSON.stringify(indexJson, null, 2));
 
     const errors: { file: string; reason: string }[] = [];
     const upserted: string[] = [];
