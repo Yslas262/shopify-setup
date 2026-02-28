@@ -1,19 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getSession } from "@/lib/session";
 import { ShopifyClient } from "@/lib/shopify";
-
-const STAGED_UPLOADS_CREATE = `
-  mutation stagedUploadsCreate($input: [StagedUploadInput!]!) {
-    stagedUploadsCreate(input: $input) {
-      stagedTargets {
-        url
-        resourceUrl
-        parameters { name value }
-      }
-      userErrors { field message }
-    }
-  }
-`;
+import { put, del } from "@vercel/blob";
 
 const THEME_CREATE = `
   mutation themeCreate($name: String!, $src: URL!, $role: ThemeRole!) {
@@ -88,6 +76,8 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "Não autenticado." }, { status: 401 });
   }
 
+  let blobUrl: string | null = null;
+
   try {
     const formData = await request.formData();
     const themeZip = formData.get("themeZip") as File | null;
@@ -113,74 +103,17 @@ export async function POST(request: NextRequest) {
       });
     }
 
-    // PASSO 1 — stagedUploadsCreate
-    const stagedData = await client.graphqlWithRetry(STAGED_UPLOADS_CREATE, {
-      input: [
-        {
-          filename: themeZip.name,
-          mimeType: "application/zip",
-          resource: "THEME",
-          fileSize: String(themeZip.size),
-        },
-      ],
+    // PASSO 1 — Upload do .zip para Vercel Blob Storage
+    const blob = await put(`themes/${storeName}-${Date.now()}.zip`, themeZip, {
+      access: "public",
     });
+    blobUrl = blob.url;
+    console.error(`[step4] Blob upload OK: ${blobUrl}`);
 
-    const stagedResult = stagedData as {
-      stagedUploadsCreate: {
-        stagedTargets: {
-          url: string;
-          resourceUrl: string;
-          parameters: { name: string; value: string }[];
-        }[];
-        userErrors: { field: string; message: string }[];
-      };
-    };
-
-    if (stagedResult.stagedUploadsCreate.userErrors.length > 0) {
-      const msgs = stagedResult.stagedUploadsCreate.userErrors.map((e) => e.message);
-      console.error("[step4] stagedUploadsCreate userErrors:", msgs);
-      return NextResponse.json({
-        success: false,
-        message: `Staged upload falhou: ${msgs.join("; ")}`,
-        errors: msgs,
-      });
-    }
-
-    const target = stagedResult.stagedUploadsCreate.stagedTargets[0];
-    if (!target) {
-      return NextResponse.json({
-        success: false,
-        message: "stagedUploadsCreate não retornou target.",
-        errors: [],
-      });
-    }
-
-    // PASSO 2 — Upload do .zip para a URL retornada
-    const uploadForm = new FormData();
-    for (const param of target.parameters) {
-      uploadForm.append(param.name, param.value);
-    }
-    uploadForm.append("file", themeZip);
-
-    const uploadRes = await fetch(target.url, {
-      method: "POST",
-      body: uploadForm,
-    });
-
-    if (!uploadRes.ok && uploadRes.status !== 201) {
-      const text = await uploadRes.text().catch(() => "");
-      console.error(`[step4] Upload S3 falhou: ${uploadRes.status}`, text);
-      return NextResponse.json({
-        success: false,
-        message: `Upload do .zip falhou: HTTP ${uploadRes.status}`,
-        errors: [],
-      });
-    }
-
-    // PASSO 3 — themeCreate com resourceUrl
+    // PASSO 2 — themeCreate com a URL pública do blob
     const createData = await client.graphqlWithRetry(THEME_CREATE, {
       name: themeName,
-      src: target.resourceUrl,
+      src: blobUrl,
       role: "UNPUBLISHED",
     });
 
@@ -210,7 +143,7 @@ export async function POST(request: NextRequest) {
       });
     }
 
-    // PASSO 4 — Polling até processing = false
+    // PASSO 3 — Polling até processing = false
     const ready = await waitForProcessing(client, themeId);
     if (!ready) {
       return NextResponse.json({
@@ -219,6 +152,15 @@ export async function POST(request: NextRequest) {
         message: "Timeout: tema ainda processando após 3 minutos.",
         errors: [],
       });
+    }
+
+    // PASSO 4 — Limpar blob após sucesso
+    try {
+      await del(blobUrl);
+      blobUrl = null;
+      console.error("[step4] Blob deletado com sucesso.");
+    } catch (delErr) {
+      console.error("[step4] Falha ao deletar blob (não crítico):", delErr);
     }
 
     return NextResponse.json({
@@ -233,5 +175,9 @@ export async function POST(request: NextRequest) {
       { success: false, message: msg, errors: [] },
       { status: 500 }
     );
+  } finally {
+    if (blobUrl) {
+      try { await del(blobUrl); } catch { /* best effort cleanup */ }
+    }
   }
 }
