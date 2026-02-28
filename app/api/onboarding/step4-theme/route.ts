@@ -4,8 +4,8 @@ import { ShopifyClient } from "@/lib/shopify";
 import { put, del } from "@vercel/blob";
 
 const THEME_CREATE = `
-  mutation themeCreate($name: String!, $src: URL!, $role: ThemeRole!) {
-    themeCreate(name: $name, src: $src, role: $role) {
+  mutation themeCreate($name: String!, $source: URL!, $role: ThemeRole!) {
+    themeCreate(name: $name, source: $source, role: $role) {
       theme {
         id
         name
@@ -113,7 +113,7 @@ export async function POST(request: NextRequest) {
     // PASSO 2 — themeCreate com a URL pública do blob
     const createData = await client.graphqlWithRetry(THEME_CREATE, {
       name: themeName,
-      src: blobUrl,
+      source: blobUrl,
       role: "UNPUBLISHED",
     });
 
