@@ -71,18 +71,27 @@ function buildVariants(
   productRows: Record<string, string>[]
 ): {
   price: string;
+  compareAtPrice?: string;
   sku?: string;
   optionValues: { name: string; optionName: string }[];
 }[] {
+  const first = productRows[0];
+
+  const optionNames: string[] = [];
+  for (let i = 1; i <= 3; i++) {
+    const name = first[`Option${i} Name`]?.trim();
+    if (name) optionNames.push(name);
+    else break;
+  }
+
   const rowsWithPrice = productRows.filter(
     (r) => r["Variant Price"]?.trim()
   );
 
   if (rowsWithPrice.length === 0) {
-    const first = productRows[0];
     return [
       {
-        price: String(first["Variant Price"]?.trim() || "0.00"),
+        price: "0.00",
         optionValues: [{ name: "Default Title", optionName: "Title" }],
       },
     ];
@@ -91,6 +100,7 @@ function buildVariants(
   return rowsWithPrice.map((r) => {
     const variant: {
       price: string;
+      compareAtPrice?: string;
       sku?: string;
       optionValues: { name: string; optionName: string }[];
     } = {
@@ -98,18 +108,28 @@ function buildVariants(
       optionValues: [],
     };
 
+    const compareAt = r["Variant Compare At Price"]?.trim();
+    if (compareAt) {
+      variant.compareAtPrice = String(compareAt);
+    }
+
     if (r["Variant SKU"]?.trim()) {
       variant.sku = r["Variant SKU"];
     }
 
-    const optionName = r["Option1 Name"]?.trim();
-    const optionValue = r["Option1 Value"]?.trim();
-    if (optionName && optionValue) {
-      variant.optionValues = [{ name: optionValue, optionName }];
-    } else {
-      variant.optionValues = [{ name: "Default Title", optionName: "Title" }];
+    const optionValues: { name: string; optionName: string }[] = [];
+    for (let i = 0; i < optionNames.length; i++) {
+      const value = r[`Option${i + 1} Value`]?.trim();
+      if (value) {
+        optionValues.push({ name: value, optionName: optionNames[i] });
+      }
     }
 
+    if (optionValues.length === 0) {
+      optionValues.push({ name: "Default Title", optionName: "Title" });
+    }
+
+    variant.optionValues = optionValues;
     return variant;
   });
 }
@@ -181,7 +201,7 @@ export async function POST(request: NextRequest) {
                 ? first["Tags"].split(",").map((t: string) => t.trim())
                 : [],
               status:
-                first["Published"]?.toLowerCase() === "true"
+                first["Status"]?.toLowerCase() === "active"
                   ? "ACTIVE"
                   : "DRAFT",
             };
