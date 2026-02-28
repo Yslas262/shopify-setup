@@ -8,7 +8,9 @@ const THEME_FILES_READ = `
       files(filenames: ["config/settings_data.json", "templates/index.json"], first: 2) {
         nodes {
           filename
-          ... on OnlineStoreThemeFileBodyText { body }
+          body {
+            ... on OnlineStoreThemeFileBodyText { content }
+          }
         }
       }
     }
@@ -126,15 +128,16 @@ async function readThemeFile(
 ): Promise<{ settingsData: string | null; indexJson: string | null }> {
   const data = await client.graphql(THEME_FILES_READ, { themeId });
   const result = data as {
-    theme: { files: { nodes: { filename: string; body?: string }[] } };
+    theme: { files: { nodes: { filename: string; body?: { content?: string } }[] } };
   };
 
   let settingsData: string | null = null;
   let indexJson: string | null = null;
 
   for (const node of result.theme.files.nodes) {
-    if (node.filename === "config/settings_data.json") settingsData = node.body || null;
-    if (node.filename === "templates/index.json") indexJson = node.body || null;
+    const content = node.body?.content || null;
+    if (node.filename === "config/settings_data.json") settingsData = content;
+    if (node.filename === "templates/index.json") indexJson = content;
   }
 
   return { settingsData, indexJson };

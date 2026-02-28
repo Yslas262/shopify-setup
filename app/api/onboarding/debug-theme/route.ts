@@ -16,8 +16,8 @@ const THEME_FILES_QUERY = `
       ], first: 10) {
         nodes {
           filename
-          ... on OnlineStoreThemeFileBodyText {
-            body
+          body {
+            ... on OnlineStoreThemeFileBodyText { content }
           }
         }
       }
@@ -47,16 +47,17 @@ export async function POST(request: NextRequest) {
         name: string;
         role: string;
         files: {
-          nodes: { filename: string; body?: string }[];
+          nodes: { filename: string; body?: { content?: string } }[];
         };
       };
     };
 
     const files: Record<string, string | null> = {};
     for (const node of result.theme.files.nodes) {
-      files[node.filename] = node.body || null;
+      const content = node.body?.content || null;
+      files[node.filename] = content;
       console.log(`\n========== ${node.filename} ==========`);
-      console.log(node.body || "(sem conteúdo)");
+      console.log(content || "(sem conteúdo)");
       console.log(`========== FIM ${node.filename} ==========\n`);
     }
 
