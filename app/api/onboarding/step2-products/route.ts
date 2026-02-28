@@ -16,6 +16,29 @@ const GET_LOCATIONS = `
   }
 `;
 
+const GET_ONLINE_STORE_PUBLICATION = `
+  query {
+    publications(first: 10) {
+      edges {
+        node {
+          id
+          name
+          supportsFuturePublishing
+        }
+      }
+    }
+  }
+`;
+
+const PUBLISHABLE_PUBLISH = `
+  mutation publishablePublish($id: ID!, $input: [PublicationInput!]!) {
+    publishablePublish(id: $id, input: $input) {
+      publishable { availablePublicationsCount { count } }
+      userErrors { field message }
+    }
+  }
+`;
+
 const CREATE_PRODUCT = `
   mutation productCreate($input: ProductInput!, $media: [CreateMediaInput!]) {
     productCreate(input: $input, media: $media) {
@@ -55,6 +78,22 @@ const VARIANTS_BULK_CREATE = `
     }
   }
 `;
+
+async function fetchOnlineStorePublicationId(client: ShopifyClient): Promise<string | null> {
+  try {
+    const data = await client.graphql(GET_ONLINE_STORE_PUBLICATION);
+    const result = data as {
+      publications: { edges: { node: { id: string; name: string } }[] };
+    };
+    const onlineStore = result.publications.edges.find(
+      (e) => e.node.name === "Online Store"
+    );
+    return onlineStore?.node.id || null;
+  } catch (err) {
+    console.error("[step2] Erro ao buscar publicationId:", err);
+    return null;
+  }
+}
 
 async function fetchLocationId(client: ShopifyClient): Promise<string> {
   const data = await client.graphqlWithRetry(GET_LOCATIONS);
@@ -168,8 +207,14 @@ export async function POST(request: NextRequest) {
       });
     }
 
-    // locationId is used indirectly — kept for future inventory operations
     void locationId;
+
+    const publicationId = await fetchOnlineStorePublicationId(client);
+    if (publicationId) {
+      console.error(`[step2] Online Store publication: ${publicationId}`);
+    } else {
+      console.error("[step2] Online Store publication não encontrada — produtos não serão publicados automaticamente.");
+    }
 
     const productIds: string[] = [];
     const errors: { handle: string; reason: string }[] = [];
@@ -248,6 +293,17 @@ export async function POST(request: NextRequest) {
             }
 
             productIds.push(product.id);
+
+            if (publicationId) {
+              try {
+                await client.graphqlWithRetry(PUBLISHABLE_PUBLISH, {
+                  id: product.id,
+                  input: [{ publicationId }],
+                });
+              } catch (pubErr) {
+                console.error(`[step2] Publish ${handle}:`, pubErr instanceof Error ? pubErr.message : pubErr);
+              }
+            }
 
             const variants = buildVariants(productRows);
 

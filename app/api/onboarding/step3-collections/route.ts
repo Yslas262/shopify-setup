@@ -35,6 +35,55 @@ const ADD_PRODUCTS_TO_COLLECTION = `
   }
 `;
 
+const GET_ONLINE_STORE_PUBLICATION = `
+  query {
+    publications(first: 10) {
+      edges {
+        node {
+          id
+          name
+        }
+      }
+    }
+  }
+`;
+
+const PUBLISHABLE_PUBLISH = `
+  mutation publishablePublish($id: ID!, $input: [PublicationInput!]!) {
+    publishablePublish(id: $id, input: $input) {
+      publishable { availablePublicationsCount { count } }
+      userErrors { field message }
+    }
+  }
+`;
+
+async function fetchOnlineStorePublicationId(client: ShopifyClient): Promise<string | null> {
+  try {
+    const data = await client.graphql(GET_ONLINE_STORE_PUBLICATION);
+    const result = data as {
+      publications: { edges: { node: { id: string; name: string } }[] };
+    };
+    const onlineStore = result.publications.edges.find(
+      (e) => e.node.name === "Online Store"
+    );
+    return onlineStore?.node.id || null;
+  } catch (err) {
+    console.error("[step3] Erro ao buscar publicationId:", err);
+    return null;
+  }
+}
+
+async function publishToOnlineStore(client: ShopifyClient, resourceId: string, publicationId: string): Promise<void> {
+  try {
+    await client.graphqlWithRetry(PUBLISHABLE_PUBLISH, {
+      id: resourceId,
+      input: [{ publicationId }],
+    });
+  } catch (err) {
+    console.error(`[step3] Publish ${resourceId}:`, err instanceof Error ? err.message : err);
+  }
+}
+
 async function findOrCreateCollection(
   client: ShopifyClient,
   name: string,
@@ -111,11 +160,19 @@ export async function POST(request: NextRequest) {
     const errors: { name: string; reason: string }[] = [];
     const createdCollections: { id: string; handle: string; name: string }[] = [];
 
+    const publicationId = await fetchOnlineStorePublicationId(client);
+    if (publicationId) {
+      console.error(`[step3] Online Store publication: ${publicationId}`);
+    } else {
+      console.error("[step3] Online Store publication não encontrada.");
+    }
+
     for (const name of collectionNames as string[]) {
       const handle = slugify(name);
       const col = await findOrCreateCollection(client, name, handle);
       if (col) {
         createdCollections.push(col);
+        if (publicationId) await publishToOnlineStore(client, col.id, publicationId);
       } else {
         errors.push({ name, reason: "Falha ao criar e coleção existente não encontrada" });
       }
@@ -125,6 +182,7 @@ export async function POST(request: NextRequest) {
     const bs = await findOrCreateCollection(client, "Best Sellers", "best-sellers");
     if (bs) {
       bestSellersId = bs.id;
+      if (publicationId) await publishToOnlineStore(client, bs.id, publicationId);
     } else {
       errors.push({ name: "Best Sellers", reason: "Falha ao criar/encontrar coleção" });
     }
