@@ -1,8 +1,19 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getSession } from "@/lib/session";
 import { ShopifyClient } from "@/lib/shopify";
-import { buildSettingsData, buildIndexJson } from "@/lib/theme-builder";
-import type { ThemeConfig } from "@/types/onboarding";
+
+const THEME_FILES_READ = `
+  query themeFiles($themeId: ID!) {
+    theme(id: $themeId) {
+      files(filenames: ["config/settings_data.json", "templates/index.json"], first: 2) {
+        nodes {
+          filename
+          ... on OnlineStoreThemeFileBodyText { body }
+        }
+      }
+    }
+  }
+`;
 
 const THEME_FILES_UPSERT = `
   mutation themeFilesUpsert($themeId: ID!, $files: [OnlineStoreThemeFilesUpsertFileInput!]!) {
@@ -43,9 +54,8 @@ const FILE_STATUS = `
 
 function toShopifyImageRef(cdnUrl: string): string {
   const withoutQuery = cdnUrl.split("?")[0];
-  const parts = withoutQuery.split("/files/");
-  const filename = parts[parts.length - 1];
-  return `shopify://shop_images/${filename}`;
+  const segments = withoutQuery.split("/");
+  return `shopify://shop_images/${segments[segments.length - 1]}`;
 }
 
 async function uploadAndResolveImage(
@@ -108,6 +118,100 @@ async function uploadAndResolveImage(
     console.error(`[step7] Exceção ao enviar "${alt}":`, err);
     return null;
   }
+}
+
+async function readThemeFile(
+  client: ShopifyClient,
+  themeId: string
+): Promise<{ settingsData: string | null; indexJson: string | null }> {
+  const data = await client.graphql(THEME_FILES_READ, { themeId });
+  const result = data as {
+    theme: { files: { nodes: { filename: string; body?: string }[] } };
+  };
+
+  let settingsData: string | null = null;
+  let indexJson: string | null = null;
+
+  for (const node of result.theme.files.nodes) {
+    if (node.filename === "config/settings_data.json") settingsData = node.body || null;
+    if (node.filename === "templates/index.json") indexJson = node.body || null;
+  }
+
+  return { settingsData, indexJson };
+}
+
+function patchSettingsData(
+  raw: string,
+  patches: { logo?: string; favicon?: string; primaryColor?: string; secondaryColor?: string }
+): string {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const obj = JSON.parse(raw) as any;
+  const current = obj.current || obj;
+
+  if (patches.logo) current.logo = patches.logo;
+  if (patches.favicon) current.favicon = patches.favicon;
+  if (patches.primaryColor) {
+    current.colors_accent_1 = patches.primaryColor;
+    current.colors_outline_button_labels = patches.primaryColor;
+  }
+  if (patches.secondaryColor) {
+    current.colors_accent_2 = patches.secondaryColor;
+  }
+
+  return JSON.stringify(obj);
+}
+
+function patchIndexJson(
+  raw: string,
+  patches: { bannerDesktop?: string; bannerMobile?: string; collections?: { handle: string }[] }
+): string {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const obj = JSON.parse(raw) as any;
+  const sections = obj.sections || {};
+
+  for (const sectionId of Object.keys(sections)) {
+    const section = sections[sectionId];
+    if (section.type !== "slideshow") continue;
+
+    const blocks = section.blocks || {};
+    for (const blockId of Object.keys(blocks)) {
+      const block = blocks[blockId];
+      if (block.type !== "slide") continue;
+      if (!block.settings) block.settings = {};
+      if (patches.bannerDesktop) block.settings.image = patches.bannerDesktop;
+      if (patches.bannerMobile) block.settings.mobile_image = patches.bannerMobile;
+      break;
+    }
+    break;
+  }
+
+  if (patches.collections && patches.collections.length > 0) {
+    for (const sectionId of Object.keys(sections)) {
+      const section = sections[sectionId];
+      if (section.type !== "collection-list") continue;
+
+      const newBlocks: Record<string, object> = {};
+      const newOrder: string[] = [];
+
+      patches.collections.forEach((col) => {
+        const blockId = `featured_collection_${Math.random().toString(36).substring(2, 8)}`;
+        newBlocks[blockId] = {
+          type: "featured_collection",
+          settings: { collection: col.handle, custom_title: "" },
+        };
+        newOrder.push(blockId);
+      });
+
+      section.blocks = newBlocks;
+      section.block_order = newOrder;
+      if (section.settings) {
+        section.settings.columns_desktop = Math.max(1, Math.min(patches.collections.length, 5));
+      }
+      break;
+    }
+  }
+
+  return JSON.stringify(obj);
 }
 
 async function upsertFileWithRetry(
@@ -178,6 +282,17 @@ export async function POST(request: NextRequest) {
 
     const client = new ShopifyClient(session.shop, session.accessToken);
 
+    // PASSO 1 — Ler os arquivos atuais do tema
+    const themeFiles = await readThemeFile(client, themeId);
+    if (!themeFiles.settingsData || !themeFiles.indexJson) {
+      return NextResponse.json({
+        success: false,
+        message: "Não foi possível ler os arquivos atuais do tema.",
+        errors: [],
+      });
+    }
+
+    // PASSO 2 — Upload das imagens para Files API e converter para shopify://shop_images/
     const imageMap: Record<string, string> = {};
     const imageEntries: { key: string; url: string }[] = [];
 
@@ -192,39 +307,38 @@ export async function POST(request: NextRequest) {
       const result = await uploadAndResolveImage(client, entry.url, entry.key);
       if (result) {
         const shopifyRef = toShopifyImageRef(result.imageUrl);
-        console.log(`${entry.key.toUpperCase()} FILE COMPLETO:`, JSON.stringify({ ...result, shopifyRef }, null, 2));
+        console.log(`[step7] ${entry.key}: CDN=${result.imageUrl} → ${shopifyRef}`);
         imageMap[entry.key] = shopifyRef;
       } else {
         imageWarnings.push(`Imagem "${entry.key}" não pôde ser processada pela Files API.`);
       }
     }
 
-    const themeConfig: ThemeConfig = {
-      shop: session.shop,
-      accessToken: session.accessToken,
-      primaryColor: primaryColor || "#6d388b",
-      secondaryColor: secondaryColor || "#a7d92f",
-      logoUrl: imageMap["logo"] || undefined,
-      faviconUrl: imageMap["favicon"] || undefined,
-      bannerDesktopUrl: imageMap["bannerDesktop"] || undefined,
-      bannerMobileUrl: imageMap["bannerMobile"] || undefined,
+    // PASSO 3 — Patch dos arquivos (ler → modificar → salvar)
+    const patchedSettings = patchSettingsData(themeFiles.settingsData, {
+      logo: imageMap["logo"],
+      favicon: imageMap["favicon"],
+      primaryColor: primaryColor || undefined,
+      secondaryColor: secondaryColor || undefined,
+    });
+
+    const patchedIndex = patchIndexJson(themeFiles.indexJson, {
+      bannerDesktop: imageMap["bannerDesktop"],
+      bannerMobile: imageMap["bannerMobile"],
       collections: collections || [],
-    };
+    });
 
-    const settingsData = buildSettingsData(themeConfig);
-    const indexJson = buildIndexJson(themeConfig);
+    console.log("[step7] PATCHED settings_data.json (logo/favicon):",
+      imageMap["logo"] || "(não alterado)", imageMap["favicon"] || "(não alterado)");
+    console.log("[step7] PATCHED index.json (image/mobile_image):",
+      imageMap["bannerDesktop"] || "(não alterado)", imageMap["bannerMobile"] || "(não alterado)");
 
-    console.log("SETTINGS_DATA:", JSON.stringify(settingsData, null, 2));
-    console.log("INDEX_JSON:", JSON.stringify(indexJson, null, 2));
-
+    // PASSO 4 — Upsert
     const errors: { file: string; reason: string }[] = [];
     const upserted: string[] = [];
 
     const settingsResult = await upsertFileWithRetry(
-      client,
-      themeId,
-      "config/settings_data.json",
-      JSON.stringify(settingsData)
+      client, themeId, "config/settings_data.json", patchedSettings
     );
     if (settingsResult.ok) {
       upserted.push("config/settings_data.json");
@@ -233,10 +347,7 @@ export async function POST(request: NextRequest) {
     }
 
     const indexResult = await upsertFileWithRetry(
-      client,
-      themeId,
-      "templates/index.json",
-      JSON.stringify(indexJson)
+      client, themeId, "templates/index.json", patchedIndex
     );
     if (indexResult.ok) {
       upserted.push("templates/index.json");
