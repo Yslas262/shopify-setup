@@ -59,6 +59,9 @@ const SCOPES = [
   "write_third_party_fulfillment_orders",
   "read_translations",
   "write_translations",
+  "read_online_store_navigation",
+  "write_online_store_navigation",
+  "write_legal_policies",
 ].join(",");
 
 export default function HomePage() {
