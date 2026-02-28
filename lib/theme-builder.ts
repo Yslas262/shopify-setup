@@ -7,8 +7,8 @@ function generateId(): string {
 export function buildSettingsData(config: ThemeConfig): object {
   return {
     current: {
-      logo: config.logoId,
-      favicon: config.faviconId,
+      logo: config.logoUrl,
+      favicon: config.faviconUrl,
       logo_width: 200,
       mobile_logo_width: 120,
 
@@ -48,8 +48,8 @@ export function buildIndexJson(config: ThemeConfig): object {
           slide_cbnAfz: {
             type: "slide",
             settings: {
-              image: config.bannerDesktopId,
-              mobile_image: config.bannerMobileId,
+              image: config.bannerDesktopUrl,
+              mobile_image: config.bannerMobileUrl,
               image_overlay_opacity: 0,
               heading: "",
               box_align: "middle-center",

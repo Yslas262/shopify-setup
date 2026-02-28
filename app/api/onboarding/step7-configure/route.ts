@@ -41,6 +41,13 @@ const FILE_STATUS = `
   }
 `;
 
+function toShopifyImageRef(cdnUrl: string): string {
+  const afterFiles = cdnUrl.split("/files/")[1];
+  if (!afterFiles) return cdnUrl;
+  const filename = afterFiles.split("?")[0];
+  return `shopify://shop_images/${filename}`;
+}
+
 async function uploadAndResolveImage(
   client: ShopifyClient,
   url: string,
@@ -184,8 +191,9 @@ export async function POST(request: NextRequest) {
     for (const entry of imageEntries) {
       const result = await uploadAndResolveImage(client, entry.url, entry.key);
       if (result) {
-        console.log(`${entry.key.toUpperCase()} FILE COMPLETO:`, JSON.stringify(result, null, 2));
-        imageMap[entry.key] = result.id;
+        const shopifyRef = toShopifyImageRef(result.imageUrl);
+        console.log(`${entry.key.toUpperCase()} FILE COMPLETO:`, JSON.stringify({ ...result, shopifyRef }, null, 2));
+        imageMap[entry.key] = shopifyRef;
       } else {
         imageWarnings.push(`Imagem "${entry.key}" não pôde ser processada pela Files API.`);
       }
@@ -196,10 +204,10 @@ export async function POST(request: NextRequest) {
       accessToken: session.accessToken,
       primaryColor: primaryColor || "#6d388b",
       secondaryColor: secondaryColor || "#a7d92f",
-      logoId: imageMap["logo"] || undefined,
-      faviconId: imageMap["favicon"] || undefined,
-      bannerDesktopId: imageMap["bannerDesktop"] || undefined,
-      bannerMobileId: imageMap["bannerMobile"] || undefined,
+      logoUrl: imageMap["logo"] || undefined,
+      faviconUrl: imageMap["favicon"] || undefined,
+      bannerDesktopUrl: imageMap["bannerDesktop"] || undefined,
+      bannerMobileUrl: imageMap["bannerMobile"] || undefined,
       collections: collections || [],
     };
 
