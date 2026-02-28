@@ -42,9 +42,9 @@ const FILE_STATUS = `
 `;
 
 function toShopifyImageRef(cdnUrl: string): string {
-  const afterFiles = cdnUrl.split("/files/")[1];
-  if (!afterFiles) return cdnUrl;
-  const filename = afterFiles.split("?")[0];
+  const withoutQuery = cdnUrl.split("?")[0];
+  const parts = withoutQuery.split("/files/");
+  const filename = parts[parts.length - 1];
   return `shopify://shop_images/${filename}`;
 }
 
