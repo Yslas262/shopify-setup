@@ -55,9 +55,9 @@ const FILE_STATUS = `
 `;
 
 function stripJsonComments(text: string): string {
-  return text
-    .replace(/\/\*[\s\S]*?\*\//g, "")
-    .replace(/\/\/.*$/gm, "");
+  const start = text.indexOf("{");
+  if (start === -1) return text;
+  return text.substring(start);
 }
 
 function toShopifyImageRef(cdnUrl: string): string {
