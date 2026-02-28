@@ -184,7 +184,7 @@ export async function POST(request: NextRequest) {
     for (const entry of imageEntries) {
       const result = await uploadAndResolveImage(client, entry.url, entry.key);
       if (result) {
-        imageMap[entry.key] = result.id;
+        imageMap[entry.key] = result.imageUrl;
       } else {
         imageWarnings.push(`Imagem "${entry.key}" não pôde ser processada pela Files API.`);
       }
