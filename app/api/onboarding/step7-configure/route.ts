@@ -54,6 +54,12 @@ const FILE_STATUS = `
   }
 `;
 
+function stripJsonComments(text: string): string {
+  return text
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .replace(/\/\/.*$/gm, "");
+}
+
 function toShopifyImageRef(cdnUrl: string): string {
   const withoutQuery = cdnUrl.split("?")[0];
   const segments = withoutQuery.split("/");
@@ -148,7 +154,7 @@ function patchSettingsData(
   patches: { logo?: string; favicon?: string; primaryColor?: string; secondaryColor?: string }
 ): string {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const obj = JSON.parse(raw) as any;
+  const obj = JSON.parse(stripJsonComments(raw)) as any;
   const current = obj.current || obj;
 
   if (patches.logo) current.logo = patches.logo;
@@ -169,7 +175,7 @@ function patchIndexJson(
   patches: { bannerDesktop?: string; bannerMobile?: string; collections?: { handle: string }[] }
 ): string {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const obj = JSON.parse(raw) as any;
+  const obj = JSON.parse(stripJsonComments(raw)) as any;
   const sections = obj.sections || {};
 
   for (const sectionId of Object.keys(sections)) {
