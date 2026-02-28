@@ -16,12 +16,15 @@ export function parseCSV(text: string): {
   headers: string[];
   rows: Record<string, string>[];
 } {
-  const lines = splitCSVLines(text);
+  const clean = text.replace(/^\uFEFF/, "");
+  const lines = splitCSVLines(clean);
   if (lines.length < 2) {
     return { headers: [], rows: [] };
   }
 
-  const headers = parseCSVRow(lines[0]);
+  const headers = parseCSVRow(lines[0]).map((h) =>
+    h.replace(/[\u200B-\u200D\uFEFF\u00A0]/g, "").trim()
+  );
   const rows: Record<string, string>[] = [];
 
   for (let i = 1; i < lines.length; i++) {

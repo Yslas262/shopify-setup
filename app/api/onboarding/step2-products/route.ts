@@ -106,6 +106,15 @@ async function fetchLocationId(client: ShopifyClient): Promise<string> {
   throw new Error("Nenhuma location encontrada na loja.");
 }
 
+function findColumn(row: Record<string, string>, name: string): string {
+  if (row[name] !== undefined) return row[name];
+  const lower = name.toLowerCase();
+  for (const key of Object.keys(row)) {
+    if (key.toLowerCase() === lower) return row[key];
+  }
+  return "";
+}
+
 function buildVariants(
   productRows: Record<string, string>[]
 ): {
@@ -118,16 +127,17 @@ function buildVariants(
 
   const optionNames: string[] = [];
   for (let i = 1; i <= 3; i++) {
-    const name = first[`Option${i} Name`]?.trim();
+    const name = findColumn(first, `Option${i} Name`)?.trim();
     if (name) optionNames.push(name);
     else break;
   }
 
   const rowsWithPrice = productRows.filter(
-    (r) => r["Variant Price"]?.trim()
+    (r) => findColumn(r, "Variant Price")?.trim()
   );
 
   if (rowsWithPrice.length === 0) {
+    console.error(`[step2] buildVariants: 0 rows com preço para "${findColumn(first, "Handle")}". Keys: ${Object.keys(first).join(", ")}`);
     return [
       {
         price: "0.00",
@@ -137,28 +147,32 @@ function buildVariants(
   }
 
   return rowsWithPrice.map((r) => {
+    const rawPrice = findColumn(r, "Variant Price").trim();
+    const price = rawPrice.replace(",", ".");
+
     const variant: {
       price: string;
       compareAtPrice?: string;
       sku?: string;
       optionValues: { name: string; optionName: string }[];
     } = {
-      price: String(r["Variant Price"]),
+      price,
       optionValues: [],
     };
 
-    const compareAt = r["Variant Compare At Price"]?.trim();
+    const compareAt = findColumn(r, "Variant Compare At Price")?.trim();
     if (compareAt) {
-      variant.compareAtPrice = String(compareAt);
+      variant.compareAtPrice = compareAt.replace(",", ".");
     }
 
-    if (r["Variant SKU"]?.trim()) {
-      variant.sku = r["Variant SKU"];
+    const sku = findColumn(r, "Variant SKU")?.trim();
+    if (sku) {
+      variant.sku = sku;
     }
 
     const optionValues: { name: string; optionName: string }[] = [];
     for (let i = 0; i < optionNames.length; i++) {
-      const value = r[`Option${i + 1} Value`]?.trim();
+      const value = findColumn(r, `Option${i + 1} Value`)?.trim();
       if (value) {
         optionValues.push({ name: value, optionName: optionNames[i] });
       }
@@ -227,26 +241,31 @@ export async function POST(request: NextRequest) {
           try {
             const first = productRows[0];
 
+            if (processed === 0) {
+              console.error(`[step2] CSV headers (keys do primeiro row): ${Object.keys(first).join(" | ")}`);
+              console.error(`[step2] Primeiro produto "${handle}" Variant Price raw: "${findColumn(first, "Variant Price")}"`);
+            }
+
             const images = productRows
-              .filter((r: Record<string, string>) => r["Image Src"]?.trim())
-              .map((r: Record<string, string>) => r["Image Src"]);
+              .filter((r: Record<string, string>) => findColumn(r, "Image Src")?.trim())
+              .map((r: Record<string, string>) => findColumn(r, "Image Src"));
 
             const media = images.map((url: string) => ({
               originalSource: url,
               mediaContentType: "IMAGE" as const,
-              alt: first["Title"] || handle,
+              alt: findColumn(first, "Title") || handle,
             }));
 
             const input = {
-              title: first["Title"] || handle,
-              descriptionHtml: first["Body (HTML)"] || "",
-              vendor: first["Vendor"] || "",
-              productType: first["Type"] || "",
-              tags: first["Tags"]
-                ? first["Tags"].split(",").map((t: string) => t.trim())
+              title: findColumn(first, "Title") || handle,
+              descriptionHtml: findColumn(first, "Body (HTML)") || "",
+              vendor: findColumn(first, "Vendor") || "",
+              productType: findColumn(first, "Type") || "",
+              tags: findColumn(first, "Tags")
+                ? findColumn(first, "Tags").split(",").map((t: string) => t.trim())
                 : [],
               status:
-                first["Status"]?.toLowerCase() === "active"
+                findColumn(first, "Status")?.toLowerCase() === "active"
                   ? "ACTIVE"
                   : "DRAFT",
             };
@@ -307,6 +326,10 @@ export async function POST(request: NextRequest) {
 
             const variants = buildVariants(productRows);
 
+            if (processed <= 2) {
+              console.error(`[step2] Variantes para "${handle}":`, JSON.stringify(variants, null, 2));
+            }
+
             if (variants.length > 0) {
               try {
                 const varData = await client.graphqlWithRetry(VARIANTS_BULK_CREATE, {
@@ -317,16 +340,20 @@ export async function POST(request: NextRequest) {
 
                 const varResult = varData as {
                   productVariantsBulkCreate: {
-                    productVariants: { id: string }[] | null;
+                    productVariants: { id: string; price: string }[] | null;
                     userErrors: { field: string; message: string }[];
                   };
                 };
 
                 if (varResult.productVariantsBulkCreate.userErrors.length > 0) {
                   const reason = varResult.productVariantsBulkCreate.userErrors
-                    .map((e) => e.message)
+                    .map((e) => `${e.field}: ${e.message}`)
                     .join("; ");
-                  console.error(`[step2] variantsBulkCreate ${handle}:`, reason);
+                  console.error(`[step2] variantsBulkCreate ${handle} ERRO:`, reason);
+                  console.error(`[step2] Input enviado:`, JSON.stringify(variants));
+                } else if (processed <= 2) {
+                  console.error(`[step2] variantsBulkCreate ${handle} OK:`,
+                    JSON.stringify(varResult.productVariantsBulkCreate.productVariants));
                 }
               } catch (varErr) {
                 const reason = varErr instanceof Error ? varErr.message : "Erro";
