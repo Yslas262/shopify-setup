@@ -8,10 +8,10 @@ export interface ThemeConfig {
   accessToken: string;
   primaryColor: string;
   secondaryColor: string;
-  logoUrl?: string;
-  faviconUrl?: string;
-  bannerDesktopUrl?: string;
-  bannerMobileUrl?: string;
+  logoId?: string;
+  faviconId?: string;
+  bannerDesktopId?: string;
+  bannerMobileId?: string;
   collections: CollectionInput[];
   themeId?: string;
 }

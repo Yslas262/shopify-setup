@@ -184,7 +184,7 @@ export async function POST(request: NextRequest) {
     for (const entry of imageEntries) {
       const result = await uploadAndResolveImage(client, entry.url, entry.key);
       if (result) {
-        imageMap[entry.key] = result.imageUrl;
+        imageMap[entry.key] = result.id;
       } else {
         imageWarnings.push(`Imagem "${entry.key}" não pôde ser processada pela Files API.`);
       }
@@ -195,10 +195,10 @@ export async function POST(request: NextRequest) {
       accessToken: session.accessToken,
       primaryColor: primaryColor || "#6d388b",
       secondaryColor: secondaryColor || "#a7d92f",
-      logoUrl: imageMap["logo"] || undefined,
-      faviconUrl: imageMap["favicon"] || undefined,
-      bannerDesktopUrl: imageMap["bannerDesktop"] || undefined,
-      bannerMobileUrl: imageMap["bannerMobile"] || undefined,
+      logoId: imageMap["logo"] || undefined,
+      faviconId: imageMap["favicon"] || undefined,
+      bannerDesktopId: imageMap["bannerDesktop"] || undefined,
+      bannerMobileId: imageMap["bannerMobile"] || undefined,
       collections: collections || [],
     };
 
