@@ -80,7 +80,7 @@ export function buildIndexJson(config: ThemeConfig): object {
           heading_size: "h1",
           image_ratio: "square",
           color_scheme: "background-1",
-          columns_desktop: Math.min(config.collections.length, 5),
+          columns_desktop: Math.max(1, Math.min(config.collections.length, 5)),
           columns_mobile: "2",
           slider_desktop: true,
           slider_mobile: true,
