@@ -12,6 +12,17 @@ const SHOP_POLICY_UPDATE = `
   }
 `;
 
+const GET_SHOP_POLICIES = `
+  query {
+    shop {
+      privacyPolicy { id title url }
+      refundPolicy { id title url }
+      termsOfService { id title url }
+      shippingPolicy { id title url }
+    }
+  }
+`;
+
 const LIST_MENUS = `
   query {
     menus(first: 10) {
@@ -20,7 +31,7 @@ const LIST_MENUS = `
           id
           handle
           title
-          items { id title type url }
+          items { id title type url resourceUrl }
         }
       }
     }
@@ -40,11 +51,17 @@ const MENU_UPDATE = `
   }
 `;
 
+interface ShopPolicyNode {
+  id: string;
+  title: string;
+  url: string;
+}
+
 interface MenuNode {
   id: string;
   handle: string;
   title: string;
-  items: { id: string; title: string; type: string; url: string }[];
+  items: { id: string; title: string; type: string; url: string; resourceUrl?: string }[];
 }
 
 export async function POST(request: NextRequest) {
@@ -58,11 +75,12 @@ export async function POST(request: NextRequest) {
 
     const client = new ShopifyClient(session.shop, session.accessToken);
     const errors: { item: string; reason: string }[] = [];
+    const warnings: string[] = [];
     const completed: string[] = [];
     const storeName = session.shop.replace(".myshopify.com", "");
     const storeEmail = `support@${session.shop}`;
 
-    // PASSO 1 — Criar políticas
+    // PASSO 1 — Criar/atualizar políticas (tratar auto-management como warning)
     const policies = [
       { type: "REFUND_POLICY", label: "Refund Policy", body: UK_POLICIES.refund_policy(storeName) },
       { type: "PRIVACY_POLICY", label: "Privacy Policy", body: UK_POLICIES.privacy_policy(storeName, storeEmail) },
@@ -80,8 +98,15 @@ export async function POST(request: NextRequest) {
         };
         if (result.shopPolicyUpdate.userErrors.length > 0) {
           const msg = result.shopPolicyUpdate.userErrors.map((e) => e.message).join("; ");
-          console.error(`[step8] shopPolicyUpdate ${policy.label} userErrors:`, msg);
-          errors.push({ item: policy.label, reason: msg });
+          const isAutoManaged = msg.toLowerCase().includes("automatic management");
+          if (isAutoManaged) {
+            console.log(`[step8] ${policy.label}: gerenciamento automático ativo — política já existe, pulando.`);
+            warnings.push(`${policy.label}: gerenciamento automático ativo (política já existe)`);
+            completed.push(`${policy.label} (auto-managed)`);
+          } else {
+            console.error(`[step8] shopPolicyUpdate ${policy.label} userErrors:`, msg);
+            errors.push({ item: policy.label, reason: msg });
+          }
         } else {
           completed.push(policy.label);
         }
@@ -92,7 +117,39 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // PASSO 2 — Buscar menus existentes
+    // PASSO 2 — Consultar políticas existentes na loja para obter os IDs
+    let shopPolicies: Record<string, ShopPolicyNode | null> = {
+      refundPolicy: null,
+      privacyPolicy: null,
+      termsOfService: null,
+      shippingPolicy: null,
+    };
+    try {
+      const polData = await client.graphql(GET_SHOP_POLICIES);
+      const result = polData as {
+        shop: {
+          privacyPolicy: ShopPolicyNode | null;
+          refundPolicy: ShopPolicyNode | null;
+          termsOfService: ShopPolicyNode | null;
+          shippingPolicy: ShopPolicyNode | null;
+        };
+      };
+      shopPolicies = {
+        refundPolicy: result.shop.refundPolicy,
+        privacyPolicy: result.shop.privacyPolicy,
+        termsOfService: result.shop.termsOfService,
+        shippingPolicy: result.shop.shippingPolicy,
+      };
+      console.log("[step8] Políticas na loja:",
+        Object.entries(shopPolicies)
+          .map(([k, v]) => `${k}: ${v ? v.id : "não existe"}`)
+          .join(", ")
+      );
+    } catch (err) {
+      console.error("[step8] Erro ao buscar políticas existentes:", err);
+    }
+
+    // PASSO 3 — Buscar menus existentes
     let menus: MenuNode[] = [];
     try {
       const menuData = await client.graphql(LIST_MENUS);
@@ -107,7 +164,7 @@ export async function POST(request: NextRequest) {
       errors.push({ item: "Listar menus", reason });
     }
 
-    // PASSO 3 — Atualizar Footer menu com links de políticas
+    // PASSO 4 — Atualizar Footer menu com links de políticas (usando resourceId)
     const footerMenu = menus.find((m) => m.handle === "footer");
     if (footerMenu) {
       try {
@@ -118,37 +175,61 @@ export async function POST(request: NextRequest) {
           url: item.url,
         }));
 
-        const policyItems = [
-          { title: "Refund Policy", type: "HTTP", url: "/policies/refund-policy" },
-          { title: "Privacy Policy", type: "HTTP", url: "/policies/privacy-policy" },
-          { title: "Terms of Service", type: "HTTP", url: "/policies/terms-of-service" },
-          { title: "Shipping Policy", type: "HTTP", url: "/policies/shipping-policy" },
+        const policyMenuEntries: { label: string; key: keyof typeof shopPolicies }[] = [
+          { label: "Refund Policy", key: "refundPolicy" },
+          { label: "Privacy Policy", key: "privacyPolicy" },
+          { label: "Terms of Service", key: "termsOfService" },
+          { label: "Shipping Policy", key: "shippingPolicy" },
         ];
 
-        const existingUrls = new Set(existingItems.map((i) => i.url));
-        const newPolicyItems = policyItems.filter((p) => !existingUrls.has(p.url));
+        const newPolicyItems: { title: string; type: string; resourceId: string }[] = [];
+        for (const entry of policyMenuEntries) {
+          const policy = shopPolicies[entry.key];
+          if (!policy) {
+            console.log(`[step8] Política ${entry.label} não existe na loja, pulando link no menu.`);
+            continue;
+          }
+          const alreadyInMenu = existingItems.some(
+            (i) => i.title === entry.label || i.url?.includes(entry.key.replace(/([A-Z])/g, "-$1").toLowerCase())
+          );
+          if (alreadyInMenu) {
+            console.log(`[step8] ${entry.label} já existe no footer menu, pulando.`);
+            continue;
+          }
+          newPolicyItems.push({
+            title: entry.label,
+            type: "SHOP_POLICY",
+            resourceId: policy.id,
+          });
+        }
 
-        const allItems = [
-          ...existingItems,
-          ...newPolicyItems,
-        ];
-
-        const data = await client.graphqlWithRetry(MENU_UPDATE, {
-          id: footerMenu.id,
-          title: footerMenu.title,
-          items: allItems,
-        });
-
-        const result = data as {
-          menuUpdate: { userErrors: { field: string; message: string }[] };
-        };
-
-        if (result.menuUpdate.userErrors.length > 0) {
-          const msg = result.menuUpdate.userErrors.map((e) => e.message).join("; ");
-          console.error("[step8] menuUpdate footer userErrors:", msg);
-          errors.push({ item: "Footer menu", reason: msg });
+        if (newPolicyItems.length === 0) {
+          completed.push("Footer menu (todas políticas já presentes)");
         } else {
-          completed.push(`Footer menu (${newPolicyItems.length} itens adicionados)`);
+          const allItems = [
+            ...existingItems,
+            ...newPolicyItems,
+          ];
+
+          console.log("[step8] Footer menu items a enviar:", JSON.stringify(allItems, null, 2));
+
+          const data = await client.graphqlWithRetry(MENU_UPDATE, {
+            id: footerMenu.id,
+            title: footerMenu.title,
+            items: allItems,
+          });
+
+          const result = data as {
+            menuUpdate: { userErrors: { field: string; message: string }[] };
+          };
+
+          if (result.menuUpdate.userErrors.length > 0) {
+            const msg = result.menuUpdate.userErrors.map((e) => e.message).join("; ");
+            console.error("[step8] menuUpdate footer userErrors:", msg);
+            errors.push({ item: "Footer menu", reason: msg });
+          } else {
+            completed.push(`Footer menu (${newPolicyItems.length} itens adicionados)`);
+          }
         }
       } catch (err) {
         const reason = err instanceof Error ? err.message : "Erro";
@@ -160,7 +241,7 @@ export async function POST(request: NextRequest) {
       errors.push({ item: "Footer menu", reason: "Menu com handle 'footer' não encontrado." });
     }
 
-    // PASSO 4 — Verificar Main menu (não alterar)
+    // PASSO 5 — Verificar Main menu (não alterar)
     const mainMenu = menus.find((m) => m.handle === "main-menu");
     if (mainMenu) {
       console.log(`[step8] Main menu encontrado: ${mainMenu.id} (${mainMenu.items.length} itens)`);
@@ -173,6 +254,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({
       success: completed.length > 0,
       completed,
+      warnings,
       errors,
       message:
         errors.length === 0
