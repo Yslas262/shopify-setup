@@ -47,6 +47,7 @@ interface PipelineData {
 
 export default function OnboardingPage() {
   const [mode, setMode] = useState<"auto" | "manual" | null>(null);
+  const [storeDisplayName, setStoreDisplayName] = useState("");
   const [logo, setLogo] = useState<File | null>(null);
   const [favicon, setFavicon] = useState<File | null>(null);
   const [primaryColor, setPrimaryColor] = useState("#6d388b");
@@ -180,7 +181,7 @@ export default function OnboardingPage() {
         headers["Content-Type"] = "application/json";
         break;
       case 8:
-        body = JSON.stringify({ collections: pipe.collections });
+        body = JSON.stringify({ collections: pipe.collections, storeDisplayName });
         headers["Content-Type"] = "application/json";
         break;
       default:
@@ -473,6 +474,19 @@ export default function OnboardingPage() {
           <div className="bg-white/10 backdrop-blur-lg rounded-2xl border border-white/20 p-6 space-y-6">
             <fieldset className="space-y-4">
               <legend className="text-lg font-semibold text-white mb-2">Identidade</legend>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div className="space-y-2">
+                  <label className="block text-sm font-medium text-slate-200">Nome da Loja</label>
+                  <input
+                    type="text"
+                    placeholder="Ex: Joias Demo"
+                    value={storeDisplayName}
+                    onChange={(e) => setStoreDisplayName(e.target.value)}
+                    className="w-full px-3 py-2 bg-white/5 border border-white/10 rounded-lg text-white placeholder-slate-400 text-sm focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                    disabled={runningManualStep !== null}
+                  />
+                </div>
+              </div>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <FileInput label="Logo (PNG/SVG)" accept=".png,.svg" onChange={setLogo} fileName={logo?.name} disabled={runningManualStep !== null} />
                 <FileInput label="Favicon (PNG)" accept=".png" onChange={setFavicon} fileName={favicon?.name} disabled={runningManualStep !== null} />

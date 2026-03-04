@@ -205,6 +205,10 @@ export async function POST(request: NextRequest) {
     const warnings: string[] = [];
     const storeName = session.shop.replace(".myshopify.com", "");
     const storeEmail = `support@${session.shop}`;
+    const rawDisplayName =
+      (reqBody.storeDisplayName as string | undefined)?.trim() || "";
+    const displayName =
+      rawDisplayName.length > 0 ? rawDisplayName : storeName;
 
     // ── PASSO 1: Buscar páginas existentes ──
     let existingPages: PageNode[] = [];
@@ -221,7 +225,7 @@ export async function POST(request: NextRequest) {
     }
 
     // ── PASSO 2: Criar as 7 páginas (skip se já existir) ──
-    const pageDefs = buildPageDefinitions(storeName, storeEmail);
+    const pageDefs = buildPageDefinitions(displayName, storeEmail);
     const createdPages: Map<string, PageNode> = new Map();
 
     for (const existing of existingPages) {

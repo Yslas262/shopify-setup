@@ -58,6 +58,14 @@ const CREATE_PRODUCT = `
   }
 `;
 
+const PRODUCT_OPTIONS_CREATE = `
+  mutation productOptionsCreate($productId: ID!, $options: [OptionCreateInput!]!) {
+    productOptionsCreate(productId: $productId, options: $options) {
+      userErrors { field message code }
+    }
+  }
+`;
+
 const VARIANTS_BULK_CREATE = `
   mutation productVariantsBulkCreate(
     $productId: ID!,
@@ -333,6 +341,42 @@ export async function POST(request: NextRequest) {
             }
 
             productIds.push(product.id);
+
+            // Criar opções de produto (Color, Size, etc.) antes das variantes
+            const optionNamesForProduct: string[] = [];
+            for (let i = 1; i <= 3; i++) {
+              const name = findColumn(first, `Option${i} Name`)?.trim();
+              if (name) optionNamesForProduct.push(name);
+              else break;
+            }
+
+            if (optionNamesForProduct.length > 0) {
+              try {
+                const optData = await client.graphqlWithRetry(PRODUCT_OPTIONS_CREATE, {
+                  productId: product.id,
+                  options: optionNamesForProduct.map((name, index) => ({
+                    name,
+                    position: index + 1,
+                  })),
+                });
+                const optResult = optData as {
+                  productOptionsCreate: {
+                    userErrors: { field: string; message: string; code?: string }[];
+                  };
+                };
+                if (optResult.productOptionsCreate.userErrors.length > 0) {
+                  const msg = optResult.productOptionsCreate.userErrors
+                    .map((e) => `${Array.isArray(e.field) ? e.field.join(".") : ""}: ${e.message}${e.code ? ` (${e.code})` : ""}`)
+                    .join("; ");
+                  console.error(`[step2] productOptionsCreate ${handle}:`, msg);
+                }
+              } catch (optErr) {
+                console.error(
+                  `[step2] productOptionsCreate ${handle} exceção:`,
+                  optErr instanceof Error ? optErr.message : optErr
+                );
+              }
+            }
 
             if (publicationId) {
               try {
