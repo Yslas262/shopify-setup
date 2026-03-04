@@ -125,6 +125,7 @@ function buildVariants(
 }[] {
   const first = productRows[0];
 
+  // Nomes das opções (ex: Color, Size)
   const optionNames: string[] = [];
   for (let i = 1; i <= 3; i++) {
     const name = findColumn(first, `Option${i} Name`)?.trim();
@@ -132,22 +133,42 @@ function buildVariants(
     else break;
   }
 
-  const rowsWithPrice = productRows.filter(
-    (r) => findColumn(r, "Variant Price")?.trim()
-  );
+  // Preço base: usado como fallback para linhas de variante sem preço
+  const basePriceRaw =
+    findColumn(first, "Variant Price").trim() ||
+    productRows
+      .map((r) => findColumn(r, "Variant Price").trim())
+      .find((v) => v) ||
+    "0.00";
+  const basePrice = basePriceRaw.replace(",", ".");
 
-  if (rowsWithPrice.length === 0) {
-    console.error(`[step2] buildVariants: 0 rows com preço para "${findColumn(first, "Handle")}". Keys: ${Object.keys(first).join(", ")}`);
+  // Linhas que realmente representam variantes (têm opções ou preço)
+  const variantRows = productRows.filter((r) => {
+    const hasPrice = !!findColumn(r, "Variant Price")?.trim();
+    const hasOptions =
+      !!findColumn(r, "Option1 Value")?.trim() ||
+      !!findColumn(r, "Option2 Value")?.trim() ||
+      !!findColumn(r, "Option3 Value")?.trim();
+    return hasPrice || hasOptions;
+  });
+
+  if (variantRows.length === 0) {
+    console.error(
+      `[step2] buildVariants: nenhuma linha de variante encontrada para "${findColumn(
+        first,
+        "Handle"
+      )}". Keys: ${Object.keys(first).join(", ")}`
+    );
     return [
       {
-        price: "0.00",
+        price: basePrice,
         optionValues: [{ name: "Default Title", optionName: "Title" }],
       },
     ];
   }
 
-  return rowsWithPrice.map((r) => {
-    const rawPrice = findColumn(r, "Variant Price").trim();
+  return variantRows.map((r) => {
+    const rawPrice = findColumn(r, "Variant Price").trim() || basePrice;
     const price = rawPrice.replace(",", ".");
 
     const variant: {
